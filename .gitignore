@@ -9,6 +9,8 @@ data/
 *.toc
 *.log
 *.out
+test.py
+todo.md
 config.toml
 minted_main
 SKILL.MD
