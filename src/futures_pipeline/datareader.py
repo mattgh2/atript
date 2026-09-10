@@ -1,7 +1,7 @@
-from massive.rest.futures import FuturesAgg
+from massive.rest.futures import FuturesAgg, FuturesContract, FuturesProduct
 from massive import RESTClient
 from copy import copy
-from .typedefs import MassiveParameters 
+from .typedefs import MassiveParameters, ContractSpec
 from collections.abc import Iterator
 import pandas as pd
 from datetime import datetime, timedelta
@@ -10,6 +10,7 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 from .config import RAW_DATA_DIR
 from typing import cast
+import re
 
 """
 Fetches OHLC data from Massive.com.
@@ -39,6 +40,45 @@ def fetch_data(
     yield first
     yield from data
 
+
+def fetch_contract_spec(ticker: str, client: RESTClient) -> ContractSpec:
+    contract: FuturesContract | None = cast(FuturesContract | None, next(client.list_futures_contracts(
+        ticker=ticker, limit=1
+    ), None))
+
+
+    if contract is None:
+        raise ValueError(f"Failed to fetch contract for {ticker}.")
+
+    match = re.match(r"([A-Z0-9]+?)[FGHJKMNQUVXZ]\d{1,4}", ticker)
+    if not match:
+        raise ValueError(f"Error parsing product name from {ticker}.")
+    product_code = match.group(1)
+
+    product: FuturesProduct | None = cast(
+        FuturesProduct | None,
+        next(client.list_futures_products(product_code=product_code, limit=1, raw=False), None),
+    )
+
+    if product is None:
+        raise ValueError(f"Failed to fetch product for {ticker}")
+
+    multiplier: float | None = product.unit_of_measure_qty
+    tick_size: float | None = contract.trade_tick_size
+
+    if multiplier is None or tick_size is None:
+        raise ValueError(
+            f"Failed to fetch contract {"multiplier" if multiplier is None else "tick_size"}."
+        )
+
+    price_per_tick = multiplier * tick_size
+
+    return ContractSpec(
+            contract=ticker,
+            tick_size=tick_size,
+            price_per_tick=price_per_tick,
+            multiplier=multiplier
+    )
 
 """
 Loads stored data from disk from a range of dates
