@@ -1,12 +1,13 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv 
 import os
-from .typedefs import TradingFees
+from .typedefs import TradingFeeUpdates, TradingFees, PredictionInterval
 import tomlkit 
 from tomlkit.exceptions import NonExistentKey
 from tomlkit.items import Table
 from collections.abc import Mapping
+from pydantic import ValidationError
 
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -23,9 +24,8 @@ class Defaults:
     resolution: str = "15min"
     target: str = "returns"
     pred_length: int = 24
-    quantiles: list[float] = field(default_factory=lambda: [0.1,0.5,0.9])
-    prediction_interval: tuple[float, float] = (0.1, 0.9)
-
+    quantiles: list[float] = field(default_factory=lambda: [0.4,0.5,0.6])
+    prediction_interval: tuple[float, float] = (0.4,0.6)
 @dataclass
 class Settings:
     massive_api_key: str
@@ -34,23 +34,32 @@ class Settings:
     request_limit: int  = 100
 
 
-
 def load_fees() -> TradingFees:
     with open(CONFIG_FILE, 'r') as f:
         config: tomlkit.TOMLDocument = tomlkit.load(f)
     trading_costs: Mapping = config.get("trading_costs", {})
-    return TradingFees.model_validate(trading_costs) 
+
+    try:
+        fees: TradingFees = TradingFees.model_validate(trading_costs) 
+    except ValidationError as e:
+        errors = e.errors()
+        missing: list[tuple] = [er.get("loc") for er in errors if er.get("type") == "missing"]
+        raise ValueError(f"The following fees are not set: {', '.join(name[0] for name in missing)}") from None
+    return fees
 """
 
 """
-
-def store_fees(Fees: TradingFees) -> None:
+def update_fees(Fees: TradingFeeUpdates) -> None:
     if (not CONFIG_FILE.exists()):
-        raise RuntimeError("Attempted to call store_fees() when config.toml does not exist in project root. Run config.initialize_config().")
+        raise RuntimeError("Attempted to call upate_fees() when config.toml does not exist in project root. Run config.initialize_config().")
 
     with open(CONFIG_FILE, 'r') as f:
         config: tomlkit.TOMLDocument = tomlkit.load(f)
-    table: Table = config.get("trading_costs", {})
+
+    if "trading_costs" not in config:
+        config['trading_costs'] = tomlkit.table()
+
+    table: Table = config['trading_costs']
     for type, amount in Fees.model_dump().items():
         if amount is not None:
             table[type] = amount
@@ -84,7 +93,4 @@ def load_settings() -> Settings:
     if (not hf_token):
         raise RuntimeError("HF_TOKEN environment variable is not set.")
 
-    return Settings(massive_api_key=massive_key, hf_token=hf_token, trading_fees=load_fees())
-
-
-
+    return Settings(massive_api_key=massive_key, hf_token=hf_token)

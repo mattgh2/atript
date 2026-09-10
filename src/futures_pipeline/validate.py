@@ -129,38 +129,63 @@ class ModelArgs(CommandArgs):
 class PreprocessArgs(CommandArgs):
     ...
 
-class TradingFees(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ContractSpec(BaseModel):
+    contract: str
+    tick_size: float = Field(gt=0, allow_inf_nan=False)
+    price_per_tick: float  = Field(gt=0, allow_inf_nan=False)
+    multiplier: float = Field(gt=0, allow_inf_nan=False)
+
+
+class TradingFeeUpdates(BaseModel):
+    # model_config = ConfigDict(extra="forbid")
 
     entry_fee: float | None = Field(ge=0, default=None)
     exit_fee: float | None = Field(ge=0, default=None)
     entry_commission: float | None = Field(ge=0, default=None)
     exit_commission: float | None = Field(ge=0, default=None)
-    # tick_size: float | None= Field(ge=0, default=None)
-    # price_per_tick: float | None = Field(ge=0, default=None)
 
 
-    
 
-    
+class TradingFees(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entry_fee: float = Field(ge=0)
+    exit_fee: float = Field(ge=0)
+    entry_commission: float = Field(ge=0)
+    exit_commission: float = Field(ge=0)
+
+    spread: float = 1
+    slippage: float = 0.5
+
+
+class PredictionInterval(BaseModel):
+    lower: float = Field(allow_inf_nan=False)
+    upper: float = Field(allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def validate_bounds(self) -> Self:
+        if (self.lower > self.upper):
+            raise ValueError("Lower bound cannot exceed upper bound.")
+        return self
+
+
 def validate_input(args: dict):
 
     match (args.get("command"), args.get("fetch_command")):
         case ("fetch", "latest"):
-            return FetchLatestArgs(**args)
+            return FetchLatestArgs.model_validate(args)
         case ("fetch", "lookback"):
-            return FetchLookbackArgs(**args)
+            return FetchLookbackArgs.model_validate(args)
         case ("fetch", "range"):
-            return FetchRangeArgs(**args)
+            return FetchRangeArgs.model_validate(args)
         case ("preprocess", _):
-            return PreprocessArgs(**args)
+            return PreprocessArgs.model_validate(args)
         case ("model", _):
-            return ModelArgs(**args)
+            return ModelArgs.model_validate(args)
         case ("fees", _):
+            return TradingFeeUpdates.model_validate(args)
 
-            return TradingFees(**args)
-
-    return CommandArgs(**args)
+    return CommandArgs.model_validate(args)
 
 
 

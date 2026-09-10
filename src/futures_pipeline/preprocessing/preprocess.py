@@ -29,6 +29,7 @@ def preprocess(ticker: str, resolution: str) -> None:
         print(f"No data available for {ticker}.")
         return
 
+
     print(f"Processing {data.shape[0]} records for {ticker}.")
 
 
@@ -72,13 +73,12 @@ def preprocess(ticker: str, resolution: str) -> None:
             errors="coerce"
     )
 
-    data['real_timestamp'] = data['window_start']
-    data = data.drop(['window_start'], axis=1)
-
     missing_raw = data[raw_columns].isna().any(axis=1)
     if missing_raw.any():
         raise ValueError(f"Found {missing_raw.sum()} incomplete raw rows.")
 
+    data['real_timestamp'] = data['window_start']
+    data = data.drop(['window_start'], axis=1)
 
     data = (
         data.drop_duplicates(subset=["real_timestamp"])
