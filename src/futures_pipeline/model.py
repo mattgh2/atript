@@ -2,8 +2,8 @@ import pandas as pd  # requires: pip install 'pandas[pyarrow]'
 from pathlib import Path
 from chronos import Chronos2Pipeline
 from .config import PROCESSED_DATA_DIR
-from .typedefs import EvaluationResult, TradingFees
-from futures_pipeline.datareader import load_prior_data
+from .typedefs import EvaluationResult, TradingFees, ContractSpec, Signal, PredictionInterval, BacktestResults
+from .datareader import load_prior_data, fetch_contract_spec
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,7 +15,8 @@ def run_model(
     target,
     pred_length,
     quantiles,
-    prediction_interval,
+    prediction_interval: PredictionInterval,
+    contract_spec: ContractSpec,
     hf_token=None,
     model_dir=None,
     store_weights: bool = False,
@@ -27,8 +28,7 @@ def run_model(
     data: pd.DataFrame | None = load_prior_data(PROCESSED_DATA_DIR / ticker, ticker)
 
     if data is None:
-         raise RuntimeError("No data.")
-
+        raise RuntimeError("No data.")
 
     covariates: list = ["volume", "rsi", "close_to_vwap", "percent_b", "close_to_ema", "has_time_gap", "log_elapsed_intervals"]
 
@@ -84,23 +84,39 @@ def run_model(
         print(f"Mean PI width: {eval_results.mean_interval_width:.8f}")
 
     else:
-        pred_df = predict_chronos(pipeline, context_df, pred_length, target, quantiles)
-
-        ts_context = context_df.set_index('model_timestamp')[target].tail(256)
-        ts_pred = pred_df.set_index("model_timestamp")
-
-        ts_context.plot(label="historical data", figsize=(12,3))
-        ts_pred['predictions'].plot(label="forecast")
-
-        plt.fill_between(
-                ts_pred.index,
-                ts_pred[str(prediction_interval[0])],
-                ts_pred[str(prediction_interval[1])],
-                alpha=0.7,
-                label="prediction interval"
+        print(f"Performing walk-forward forecasting")
+        forecasts = walk_forward_predict(
+            pipeline,
+            context_df,
+            1,
+            1,
+            int(context_df.shape[0] * 0.98),
+            target,
+            quantiles,
         )
-        plt.legend()
-        plt.show()
+
+        market_data = data[['ticker', 'open', 'close', 'model_timestamp']].copy()
+        print("Running backtesting...")
+        backtest_results: BacktestResults = backtest_strategy(forecasts, market_data, prediction_interval, contract_spec)
+        backtest_results.display_results()
+
+        # pred_df = predict_chronos(pipeline, context_df, pred_length, target, quantiles)
+        #
+        # ts_context = context_df.set_index('model_timestamp')[target].tail(256)
+        # ts_pred = pred_df.set_index("model_timestamp")
+        #
+        # ts_context.plot(label="historical data", figsize=(12,3))
+        # ts_pred['predictions'].plot(label="forecast")
+        #
+        # plt.fill_between(
+        #         ts_pred.index,
+        #         ts_pred[str(prediction_interval[0])],
+        #         ts_pred[str(prediction_interval[1])],
+        #         alpha=0.7,
+        #         label="prediction interval"
+        # )
+        # plt.legend()
+        # plt.show()
 
 
 def predict_chronos(
@@ -204,6 +220,7 @@ def walk_forward_predict(
     results: list[pd.DataFrame] = []
     last = context_df.shape[0] - horizon
     for window_len in range(initial_train_size, last + 1, step):
+        print(f"{window_len}/{last}")
         pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, target, quantiles)
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
         pred_df['forecast_origin'] = context_df.iloc[window_len - 1]['model_timestamp']
@@ -252,7 +269,7 @@ Metrics:
 @returns  An ``EvaluationResult`` containing the evaluation metrics.
 """
 def evaluate(
-        eval: pd.DataFrame,  target: str, quantiles: list[float], prediction_interval: tuple[float, float]
+        eval: pd.DataFrame,  target: str, quantiles: list[float], prediction_interval: PredictionInterval
 ) -> EvaluationResult:
 
     actual = eval[target]
@@ -262,8 +279,7 @@ def evaluate(
     by_horizon_pf = eval.groupby("horizon").apply(
             lambda group: pd.Series({
                 "count": len(group),
-                "mae": (
-                    group[target] - group['predictions']
+                "mae": ( group[target] - group['predictions']
                 ).abs().mean(),
                 "rmse": np.sqrt(
                     (group[target] - 
@@ -287,7 +303,6 @@ def evaluate(
     # Measures how much the model improves upon the baseline.
     mae_skill = 1 - mae / baseline_mae
 
-
     by_horizon_loss: dict[str, pd.Series] = {}
     for q in quantiles:
         row_loss = pd.Series(
@@ -303,7 +318,6 @@ def evaluate(
 
     by_horizon_loss_df = pd.DataFrame(by_horizon_loss)
 
-
     # Overall quantile loss.
     loss: dict[float, float] = {}
     baseline_loss: dict[float, float] = {}
@@ -311,18 +325,16 @@ def evaluate(
         loss[quantile] = pinball_loss(eval[target], eval[str(quantile)], quantile).mean()
         baseline_loss[quantile] = pinball_loss(actual, eval[f'baseline_{quantile:g}'], quantile).mean()
 
-
     def horizon_interval_metrics(group):
         y_true = group[target]
-        lower = group[str(lower_bound)]
-        upper = group[str(upper_bound)]
+        lower = group[str(prediction_interval.lower)]
+        upper = group[str(prediction_interval.upper)]
 
         return pd.Series({
             "coverage": ((lower <= y_true) & (y_true <= upper)).mean(),
             "mean_width": (upper - lower).mean()
         })
 
-    lower_bound, upper_bound = prediction_interval
 
     intervals_by_horizon: pd.DataFrame = (
             eval.groupby("horizon")
@@ -330,12 +342,12 @@ def evaluate(
     )
 
     mean_pi_coverage: float = (
-        (eval[str(lower_bound)] <= eval[target])
-        & (eval[target] <= eval[str(upper_bound)])
+        (eval[str(prediction_interval.lower)] <= eval[target])
+        & (eval[target] <= eval[str(prediction_interval.upper)])
     ).mean()
 
-    nominal_coverage = upper_bound - lower_bound
-    mean_interval_width = (eval[str(upper_bound)] - eval[str(lower_bound)]).mean()
+    nominal_coverage = prediction_interval.upper - prediction_interval.lower
+    mean_interval_width = (eval[str(prediction_interval.upper)] - eval[str(prediction_interval.lower)]).mean()
 
     # Ratio of the amount of actual values below its prediction.
     quantile_calibration: dict[float, float] = {
@@ -368,38 +380,140 @@ def evaluate(
         calibration_error,
     )
 
-# NOTE: backtest must confirm the entry was achievable. The safest assumption is that execution happens after close_t, with spread and slippage.
-#       Return is calculated assuming entry at exactly close_t. In practice, there is some delay. Backtest must model this delay.
-# start walk-forward with horizon = 1, step = 1
-# Need to account for trading costs.
 
-# - Net P&L
-#  - Total and annualized return
-#  - Number of trades
-#  - Win rate
-#  - Average profit and loss
-#  - Profit factor
-#  - Maximum drawdown
-#  - Sharpe or Sortino ratio
-#  - Turnover
-#  - Exposure
-#  - Long versus short performance
-#  - Performance by forecast horizon
-#  - Performance after gaps
-#  - Performance by time of day
-def backtest_strategy(forecasts, market_data):
+# NOTE: Hardcoded to returns for now.
+"""
+Performs Backtest model evaluation on a set of forecasts.
+
+Metrics:
+    - Trade Count
+    - Net pnl
+    - Win rate
+    - Average pnl
+    - Gross profits
+    - Gross loss
+
+@param
+@param
+@param
+@param
+@param
+"""
+def backtest_strategy(
+    forecasts: pd.DataFrame,
+    market_data: pd.DataFrame,
+    pred_interval: PredictionInterval,
+    contract_spec: ContractSpec,
+) -> BacktestResults:
     fees: TradingFees = load_fees()
-    unset = {name for name in TradingFees.model_fields if name is None}
-    if len(unset):
-        raise ValueError(f"Unset trading fees: {",".join(name for name in unset)}")
 
-    # Define cost threshold as the expected round-trip trading cost expressed in the same units as your prediction
-    # Calculate signal based on a comparison of the predicted return and this threshold.
-    # Threshold needs to estimate
-    #   - Entry comission and fees
-    #   - Exit comission and fees
-    #   - Bid-ask spread
-    #   - Exit slippage
-    #   - Optionally some random error term.
+    round_trip_cost: float = (
+        fees.entry_fee
+        + fees.exit_fee
+        + fees.entry_commission
+        + fees.exit_commission
+    )
 
-    # Backtest iterates through
+    execution_cost = (
+            fees.spread + 2 * fees.slippage
+    ) * contract_spec.price_per_tick
+
+    total_round_trip_cost: float = round_trip_cost + execution_cost
+
+    print(total_round_trip_cost)
+    origin_prices = market_data[["ticker", "model_timestamp", "close"]].rename(
+            columns={"model_timestamp": "forecast_origin", "close": "origin_close"}
+    )
+
+    backtest: pd.DataFrame = forecasts.merge(
+            origin_prices,
+            on=['ticker', 'forecast_origin'],
+            how='left',
+            validate='many_to_one'
+    )
+
+    backtest['threshold'] = pd.Series(
+            calculate_cost_threshold(price, total_round_trip_cost, contract_spec.multiplier) for price in backtest['origin_close']
+    )
+
+
+    backtest['signal'] = pd.Series(
+            # calcuate_signal_pi(row['threshold'], row[str(pred_interval.lower)], row[str(pred_interval.upper)])
+            calculate_signal_point(row['threshold'], row['predictions'])
+            for _, row in backtest.iterrows()
+    )
+    print(backtest['signal'].value_counts())
+    for idx, row in backtest.iterrows():
+        # print(f"Threshold: {row['threshold']:.8f}. PI: [{row[str(pred_interval.lower)]}, {row[str(pred_interval.upper)]}]. Signal is {row['signal']}")
+        print(f"Threshold: {row['threshold']:.8f}. Return prediction: {row['predictions']:.8f}. Actual target value: {row['returns']:.8f}. AE: {abs(row['returns'] - row['predictions'])}. Signal is {row['signal']}")
+
+
+    backtest = backtest.sort_values(["ticker", "forecast_origin"]).reset_index(
+        drop=True
+    )
+    outcomes = market_data[['ticker', 'model_timestamp', 'open', 'close']].rename(
+            columns={"open": "entry_price", "close": "exit_price"}
+    )
+    backtest = backtest.merge(
+            outcomes,
+            on=['ticker', 'model_timestamp'],
+            how="left",
+            validate="one_to_one"
+    )
+    backtest["gross_pnl"] = (
+        backtest["signal"]
+        * (backtest["exit_price"] - backtest["entry_price"])
+        * contract_spec.multiplier
+    )
+
+    backtest['trading_cost'] = np.where(
+            backtest['signal'] != Signal.HOLD,
+            total_round_trip_cost,
+            0.0
+    )
+
+    backtest['net_pnl'] = backtest['gross_pnl'] - backtest['trading_cost']
+
+    trades = backtest[backtest['signal'] != Signal.HOLD]
+    trade_count = trades.shape[0]
+    net_pnl = trades['net_pnl'].sum()
+    win_rate = (trades['net_pnl'] > 0).mean()
+    average_pnl = trades['net_pnl'].mean()
+
+    gross_profit = trades[trades['net_pnl'] > 0]['net_pnl'].sum()
+    gross_loss = -trades[trades['net_pnl'] < 0]['net_pnl'].sum()
+
+    return BacktestResults(
+        trade_count, net_pnl, win_rate, average_pnl, gross_profit, gross_loss
+    )
+
+
+"""
+Calculates a cost threshold expressed as a proportion of the
+current notitional value.
+"""
+def calculate_cost_threshold(
+    price: float, total_round_trip_cost: float, multiplier: float
+) -> float:
+    return total_round_trip_cost / (price * multiplier)
+
+
+def calcuate_signal_pi(threshold, lower_b, upper_b) -> Signal:
+    if lower_b > threshold:
+        signal = Signal.LONG
+    elif upper_b < -threshold:
+        signal = Signal.SHORT
+    else:
+        signal = Signal.HOLD
+    return signal
+
+def calculate_signal_point(threshold, forecast):
+    if forecast > threshold:
+        signal = Signal.LONG
+    elif forecast < -threshold:
+        signal = Signal.SHORT
+    else:
+        signal = Signal.HOLD
+    return signal
+
+
