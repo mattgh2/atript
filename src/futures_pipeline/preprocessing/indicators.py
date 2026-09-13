@@ -131,8 +131,8 @@ Computes the p period exponential moving average.
 
 More info can be found in the repos reference doc.
 """
-def ema(prices: pd.Series, period: int = 15) -> np.ndarray:
-    if (len(prices) == 0): return np.array([])
+def ema(prices: pd.Series, period: int = 15) -> pd.Series:
+    if (len(prices) == 0): return pd.Series(index=prices.index)
 
     n: int = len(prices)-1
     alpha: np.float128 = np.float128(2) / np.float128((period + 1))
@@ -142,7 +142,8 @@ def ema(prices: pd.Series, period: int = 15) -> np.ndarray:
     for i in range(n-1, -1, -1): 
         ret[i] = alpha * prices.iloc[i] + (1-alpha) * ret[i+1]
 
-    return ret
+    return pd.Series(ret, index=prices.index)
+
 """
 Calcuates Bollinger Band Percent B (%B).
 
@@ -196,6 +197,22 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     vwap_df = vwap_df.sort_values('real_timestamp', ascending=False)
     return vwap_df['VWAP'].reset_index(drop=True)
 
+
+"""
+Computes a rolling window standard deviation as a measure of market volatility on recent movements.
+"""
+def rolling_std(returns: pd.Series, period: int=14) -> pd.Series:
+    if len(returns) < period:
+        raise ValueError(f"Period cannot exceed length of the input Series. {period} > {len(returns)}") 
+    # Log Returns? 
+    rolling_std = np.std(
+        [returns.iloc[i: i + period] for i in range(0, len(returns) - period + 1)],
+        axis=1,
+    )
+
+    result = pd.Series(np.nan, index=returns.index, dtype=float)
+    result.iloc[:len(rolling_std)] = rolling_std
+    return result
 
 def alpha():
     ...

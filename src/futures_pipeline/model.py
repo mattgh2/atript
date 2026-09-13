@@ -9,6 +9,28 @@ import numpy as np
 import matplotlib.pyplot as plt
 from .config import load_fees
 
+from autogluon.timeseries import TimeSeriesDataFrameq, TimeSeriesPredictor
+
+def fine_tuned_model(ticker, target, pred_length, quantiles):
+
+    volatility = ['rolling_std_20', "true_range"]
+    trend = ["close_to_ema", "ema_slope"]
+    momentum = ["rsi"]
+    relative_position = ['percent_b', 'close_to_vwap']
+    market_activity = ['volume']
+    time = ['has_time_gap', 'log_elapsed_intervals']
+
+    covariates: list = [*volatility, *trend, *momentum, *relative_position, *market_activity, *time]
+
+    predictor = TimeSeriesPredictor(
+            prediction_length=pred_length,
+            target=target,
+            known_covariates_names=covariates,
+            eval_metric="MASE"
+    ).fit(
+            train_data  = []
+    )
+
 
 def run_model(
     ticker,
@@ -30,7 +52,14 @@ def run_model(
     if data is None:
         raise RuntimeError("No data.")
 
-    covariates: list = ["volume", "rsi", "close_to_vwap", "percent_b", "close_to_ema", "has_time_gap", "log_elapsed_intervals"]
+    volatility = ['rolling_std_20', "true_range"]
+    trend = ["close_to_ema", "ema_slope"]
+    momentum = ["rsi"]
+    relative_position = ['percent_b', 'close_to_vwap']
+    market_activity = ['volume']
+    time = ['has_time_gap', 'log_elapsed_intervals']
+
+    covariates: list = [*volatility, *trend, *momentum, *relative_position, *market_activity, *time]
 
     context_df = (
         data[["model_timestamp", "ticker", target, *covariates]]
@@ -120,8 +149,8 @@ def run_model(
 
 
 def predict_chronos(
-    pipeline,
-    context_df,
+    pipeline: Chronos2Pipeline,
+    context_df: pd.DataFrame,
     pred_length: int,
     target: str,
     quantiles,

@@ -15,6 +15,7 @@ from .indicators import (
     wma,
     vwap,
     ema,
+    rolling_std
 )
 
 def preprocess(ticker: str, resolution: str) -> None:
@@ -90,15 +91,32 @@ def preprocess(ticker: str, resolution: str) -> None:
 
     data["returns"] = get_returns(data["close"])
 
-    # data["sma"] = sma(data["close"])
-    # data["wma"] = wma(data["close"])
+
     data["rsi"] = smoothed_rsi(data["close"])
     data["percent_b"] = percent_b(data["close"])
     data["VWAP"] = vwap(data)
+
+    # Trend indicators.
     data["ema"] = ema(data["close"])
+    data['close_to_ema'] = data['close'] / data["ema"] - 1
+    data['ema_slope'] = data['ema'] / data['ema'].shift(-1) - 1
+    data['ema_slope_4'] = data['ema'] / data['ema'].shift(-4) - 1
+
+
+    # Volatility.
+    data['rolling_std_20'] = rolling_std(data['returns'], 20)
+    data['intrabar_range'] = (data['high'] - data['low']) / data['close']
+    previous_close = data['close'].shift(-1)
+    data['true_range'] = pd.concat(
+            [
+                data['high'] - data['low'],
+                (data['high'] - previous_close).abs(),
+                (data['low'] - previous_close).abs()
+            ], axis=1
+    ).max(axis=1)
+    data['normalized_true_range'] = data["true_range"] / data['close']
 
     # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.
-    data['close_to_ema'] = data['close'] / data["ema"] - 1
     data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
 
 
@@ -106,6 +124,7 @@ def preprocess(ticker: str, resolution: str) -> None:
 
     data = data.replace([np.inf, -np.inf], np.nan)
     data = data.dropna(subset=model_features).reset_index(drop=True)
+
 
     data = convert_timestamps(data, candle_resolution)
 
