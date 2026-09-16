@@ -82,6 +82,13 @@ type InputArgs = (
         | TradingFeeUpdates
 )
 
+type FetchArgs = (
+        CommandArgs
+        | FetchLookbackArgs 
+        | FetchRangeArgs 
+        | FetchLatestArgs 
+)
+
 type TimedeltaUnit = Literal["s", "min", "h", "D", "W"]
 
 class CandleResolution:
