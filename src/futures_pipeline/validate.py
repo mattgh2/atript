@@ -83,13 +83,12 @@ class FetchLatestArgs(CommandArgs):
     ...
 
 class FetchRangeArgs(CommandArgs):
-    begin_date: date
-    end_date: date
-
+    begin: date
+    end: date
 
     @model_validator(mode="after")
     def validate_range(self) -> Self:
-        if self.begin_date > self.end_date:
+        if self.begin > self.end:
             raise ValueError("Starting date must not come after end date.")
         return self
 
