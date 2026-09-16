@@ -1,19 +1,19 @@
 from massive.rest.futures import FuturesAgg, FuturesContract, FuturesProduct
 from massive import RESTClient
 from copy import copy
-from .typedefs import MassiveParameters, ContractSpec
+from ..typedefs import MassiveParameters, ContractSpec
 from collections.abc import Iterator
 import pandas as pd
-from datetime import datetime, timedelta, date, time
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
-from .config import RAW_DATA_DIR
-from typing import cast
+from ..config import RAW_DATA_DIR
+from typing import cast, Hashable
 import re
 from collections import defaultdict
-from .typedefs import CandleResolution
+from ..typedefs import CandleResolution
 from enum import IntEnum
+from .readerutil import session_bounds, mes_roll_date, fetch_session_dates
 
 """
 Fetches OHLC data from Massive.com.
@@ -159,15 +159,21 @@ def fetch_training_set(
         sec = 2
 
     # NOTE: Only supports resolutions [min, hour, sec]
+    session_dates: dict[Hashable, list[pd.Timestamp]] = fetch_session_dates(
+        contract, massive_client, end_date.isoformat(), current_session_end.isoformat()
+    )
+
     res: CandleResolution = CandleResolution(resolution)
-    max_rows = 23 * 60 ** time_scale[res.unit] // res.length
 
     refetched = []
     for day, df in result.groupby('session_end_date'):
-        if (df.shape[0] < max_rows):
+        start, end = session_dates[day]
 
-            session_day = date.fromisoformat(str(day))
-            start, end = session_bounds(session_day, session_day)
+        elapsed: timedelta = end - start
+        num_hours: float = elapsed.total_seconds() / 3600
+
+        max_rows = num_hours * 60 ** time_scale[res.unit] // res.length
+        if (df.shape[0] < max_rows):
             params = { 
                     "ticker": df['ticker'].iloc[0],
                     "resolution": resolution,
@@ -191,7 +197,6 @@ def fetch_training_set(
 
     for day, df in result.groupby('session_end_date'):
         print(f"Got {df.shape[0]} rows for {day}. Ticker: {df['ticker'].iloc[0]}")
-
 
     return result
 
@@ -386,6 +391,7 @@ def fetch_latest(
     )
 
     yield from fetch_data(massive_client, params)
+
 def fetch_ticker_expiration(ticker: str, client: RESTClient) -> date:
     contract: FuturesContract | None = cast(
         FuturesContract | None,
@@ -396,28 +402,3 @@ def fetch_ticker_expiration(ticker: str, client: RESTClient) -> date:
     if contract.last_trade_date is None:
         raise ValueError(f"last_trade_date is missing.")
     return date.fromisoformat(contract.last_trade_date)
-
-def session_bounds(first: date, last: date) -> tuple[datetime, datetime]:
-    chicago = ZoneInfo("America/Chicago")
-
-    start = datetime.combine(
-        first - timedelta(days=1),
-        time(17, 0),
-        tzinfo=chicago,
-    )
-    end = datetime.combine(
-        last,
-        time(16, 0),
-        tzinfo=chicago,
-    )
-    return start, end
-
-def mes_roll_date(year: int, month: int) -> date:
-    if month not in {3, 6, 9, 12}:
-        raise ValueError("MES contract month must be 3, 6, 9, or 12")
-
-    first = date(year, month, 1)
-    first_friday = first + timedelta(days=(4 - first.weekday()) % 7)
-    third_friday = first_friday + timedelta(weeks=2)
-
-    return third_friday - timedelta(days=4)
