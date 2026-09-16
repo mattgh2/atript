@@ -43,6 +43,7 @@ def create_preprocess_parser(subparsers: _SubParsersAction, common_args: Argumen
         common_args = ArgumentParser(add_help=False)
 
     preproc_parser: ArgumentParser = subparsers.add_parser("preprocess", parents=[common_args], argument_default=SUPPRESS)
+    preproc_parser.add_argument("train", "-T", action="store_true", help="Preprocess training data.")
     return preproc_parser
 
 def create_model_parser(subparsers: _SubParsersAction) -> None:
