@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from .config import load_fees
 
-from autogluon.timeseries import TimeSeriesDataFrameq, TimeSeriesPredictor
+from autogluon.timeseries import TimeSeriesDataFrame, TimeSeriesPredictor
 
 def fine_tuned_model(ticker, target, pred_length, quantiles):
 
@@ -28,7 +28,7 @@ def fine_tuned_model(ticker, target, pred_length, quantiles):
             known_covariates_names=covariates,
             eval_metric="MASE"
     ).fit(
-            train_data  = []
+            # train_data  = []
     )
 
 
