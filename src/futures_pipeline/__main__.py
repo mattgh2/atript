@@ -1,9 +1,17 @@
-from .config import Settings, load_settings, MODEL_DIR, initialize_config, update_fees, load_fees
+from .config import (
+    Settings,
+    load_settings,
+    MODEL_DIR,
+    initialize_config,
+    update_fees,
+    TRAINING_DATA_DIR,
+    RAW_DATA_DIR,
+)
 from .massive_client import create_massive_client
 from .cli import create_parser
 from argparse import ArgumentParser
 from .typedefs import MassiveParameters
-from .fetch import fetch
+from .fetch import fetch_context, fetch_train
 from .datareader import fetch_contract_spec
 from .preprocessing.preprocess import preprocess
 from .model import run_model
@@ -17,6 +25,7 @@ from .typedefs import (
     InputArgs,
     TradingFeeUpdates,
     PredictionInterval,
+    FetchTrainArgs,
 )
 
 def main():
@@ -36,20 +45,30 @@ def main():
     match args:
         case FetchLatestArgs() | FetchRangeArgs() | FetchLookbackArgs():
             massive_parameters: MassiveParameters = {
-                # "limit": 100,
                 "sort": "window_start.desc",
                 "resolution": args.resolution,
                 "ticker": args.ticker,
             }
-
-            fetch(
+            fetch_context(
                 massive_parameters,
                 create_massive_client(settings.massive_api_key),
                 args,
+                RAW_DATA_DIR / args.ticker
+            )
+        case FetchTrainArgs():
+            fetch_train(
+                    create_massive_client(settings.massive_api_key),
+                    args,
+                    TRAINING_DATA_DIR / args.contract
             )
 
         case PreprocessArgs():
-            preprocess(args.ticker, args.resolution)
+            if args.train:
+                data_dir = TRAINING_DATA_DIR / args.ticker
+            else:
+                data_dir = RAW_DATA_DIR / args.ticker
+
+            preprocess(args.ticker, args.resolution, data_dir)
 
         case ModelArgs():
             hf_token = settings.hf_token

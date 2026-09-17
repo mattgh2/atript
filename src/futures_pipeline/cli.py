@@ -35,6 +35,11 @@ def create_fetch_parser(subparsers: _SubParsersAction, common_args: ArgumentPars
     range_parser: ArgumentParser = fetch_subparsers.add_parser("range", parents=[common_args], argument_default=SUPPRESS)
     range_parser.add_argument("--begin", required=True)
     range_parser.add_argument("--end", required=True)
+
+    train_parser: ArgumentParser = fetch_subparsers.add_parser("train", parents=[common_args], argument_default=SUPPRESS)
+    train_parser.add_argument('--years', '-y', type=int, help="Number of years to from the current year to collect.")
+    train_parser.add_argument('--contract', '-c', type=str)
+    train_parser.add_argument('--hold-out', '-H', help="Number of months to hold out for model context.")
     
     return fetch_parser
 
@@ -43,7 +48,7 @@ def create_preprocess_parser(subparsers: _SubParsersAction, common_args: Argumen
         common_args = ArgumentParser(add_help=False)
 
     preproc_parser: ArgumentParser = subparsers.add_parser("preprocess", parents=[common_args], argument_default=SUPPRESS)
-    preproc_parser.add_argument("train", "-T", action="store_true", help="Preprocess training data.")
+    preproc_parser.add_argument("--train", "-T", action="store_true", help="Preprocess training data.")
     return preproc_parser
 
 def create_model_parser(subparsers: _SubParsersAction) -> None:
