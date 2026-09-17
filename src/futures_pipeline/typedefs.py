@@ -12,7 +12,8 @@ from .validate import (
     TradingFees,
     TradingFeeUpdates,
     ContractSpec,
-    PredictionInterval
+    PredictionInterval,
+    FetchTrainArgs
 )
 from typing import Literal
 import re
@@ -82,9 +83,8 @@ type InputArgs = (
         | TradingFeeUpdates
 )
 
-type FetchArgs = (
-        CommandArgs
-        | FetchLookbackArgs 
+type FetchContextArgs = (
+        FetchLookbackArgs 
         | FetchRangeArgs 
         | FetchLatestArgs 
 )
