@@ -45,7 +45,7 @@ def fetch_session_dates(
 
     df = pd.DataFrame.from_records(vars(d) for d in schedules)
     df = df[df['event'].isin(['open','close'])]
-    print(df)
+
     df['timestamp'] = df['timestamp'].map(lambda t: pd.Timestamp(t, tz="America/Chicago"))
 
     opens: pd.Series = (
