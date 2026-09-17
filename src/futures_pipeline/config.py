@@ -2,9 +2,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from dotenv import load_dotenv 
 import os
-from .typedefs import TradingFeeUpdates, TradingFees, PredictionInterval
+from .typedefs import TradingFeeUpdates, TradingFees
 import tomlkit 
-from tomlkit.exceptions import NonExistentKey
 from tomlkit.items import Table
 from collections.abc import Mapping
 from pydantic import ValidationError
@@ -15,6 +14,7 @@ DATA_DIR: Path = PROJECT_ROOT / "data"
 RAW_DATA_DIR: Path = DATA_DIR / "raw" 
 PROCESSED_DATA_DIR: Path = DATA_DIR / "processed"
 FORECAST_DATA_DIR: Path = DATA_DIR / "forecasts"
+TRAINING_DATA_DIR: Path = DATA_DIR / "training"
 MODEL_DIR: Path = PROJECT_ROOT / "models"
 CONFIG_FILE: Path = PROJECT_ROOT / "config.toml"
 
