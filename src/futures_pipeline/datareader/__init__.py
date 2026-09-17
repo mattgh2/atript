@@ -1,2 +1,2 @@
 from .datareader import *
-import readerutil
+from . import readerutil
