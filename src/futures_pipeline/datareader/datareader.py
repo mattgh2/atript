@@ -89,7 +89,7 @@ def fetch_training_set(
     massive_client: RESTClient,
     num_years: int = 1,
     hold_out_months: int = 3,
-):
+) -> pd.DataFrame:
     leading_months: dict[int, tuple[int,str]] = {
             1: (3, "H"), 2: (3,"H"), 3: (3,"H"),
             4: (6, "M"), 5: (6,"M"), 6: (6,"M"),
@@ -108,8 +108,6 @@ def fetch_training_set(
 
     # Group dates by leading contract
     while current >= end_date:
-        print(f"Processing {current}")
-
         # Get the leading ticker for this date.
         current_year = current.year
         expr_month, month_code =  leading_months[current.month]
@@ -189,10 +187,6 @@ def fetch_training_set(
     result = (
         pd.concat([result, refetched_df], ignore_index=True)
         .drop_duplicates(["window_start"], ignore_index=True)
-    )
-
-    result["window_start"] = result["window_start"].map(
-        lambda t: datetime.fromtimestamp(t / 1_000_000_000)
     )
 
     for day, df in result.groupby('session_end_date'):
@@ -321,7 +315,7 @@ Fetches OHLC data from massive.com for a specified lookback period.
 """
 def fetch_lookback(
     period: str, depth: int, massive_parameters: MassiveParameters, massive_client
-) -> Iterator[FuturesAgg]:
+) -> pd.DataFrame:
     params = copy(massive_parameters)
 
     current_end_date: date = date.today() + timedelta(days=1)
@@ -334,8 +328,9 @@ def fetch_lookback(
     print(
         f"Fetching the last {depth} {period} ({current_end_date} to {past_date}) of history for {massive_parameters['ticker']}."
     )
-    return fetch_data(massive_client, params)
 
+    data = fetch_data(massive_client, params)
+    return pd.DataFrame.from_records(vars(d) for d in data)
 
 """
 Fetches OHLC from massive.com between a specifed date range.
@@ -349,14 +344,15 @@ Fetches OHLC from massive.com between a specifed date range.
 """
 def fetch_range(
     begin: date, end: date, massive_parameters: MassiveParameters, massive_client
-) -> Iterator[FuturesAgg]:
+) -> pd.DataFrame:
 
     params: MassiveParameters = copy(massive_parameters)
     params["window_start_gte"] = begin.isoformat()
     params["window_start_lte"] = (end + timedelta(days=1)).isoformat()
 
     print(f"Fetching data for {massive_parameters['ticker']} between {begin} and {end}")
-    return fetch_data(massive_client, params)
+    data = fetch_data(massive_client, params)
+    return pd.DataFrame.from_records(vars(d) for d in data)
 
 """
 Fetches the latest (not present on disk) OHLC from massive.com.
@@ -368,7 +364,7 @@ Fetches the latest (not present on disk) OHLC from massive.com.
 """
 def fetch_latest(
     massive_parameters: MassiveParameters, massive_client
-) -> Iterator[FuturesAgg | bytes]:
+) -> pd.DataFrame:
     params = copy(massive_parameters)
     ticker: str = massive_parameters["ticker"]
     data_dir = Path(RAW_DATA_DIR) / ticker
@@ -378,7 +374,7 @@ def fetch_latest(
 
     if last_observation is None:
         print("No history for this ticker. Use --lookback or --range instead.")
-        return
+        return pd.DataFrame()
 
     # Get the observations next starting window from the most recent observation.
     latest_window_start: datetime = last_observation["window_start"].iloc[0]
@@ -390,7 +386,8 @@ def fetch_latest(
         f"beginning at {latest_window_start}"
     )
 
-    yield from fetch_data(massive_client, params)
+    data = fetch_data(massive_client, params)
+    return pd.DataFrame.from_records(vars(d) for d in data)
 
 def fetch_ticker_expiration(ticker: str, client: RESTClient) -> date:
     contract: FuturesContract | None = cast(
