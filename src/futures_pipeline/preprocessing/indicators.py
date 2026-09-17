@@ -19,54 +19,66 @@ def get_returns(close: pd.Series) -> pd.Series:
     return pd.Series(-np.diff(close) / close.iloc[1:]).reset_index(drop=True)
 
 """
-Computes relative strength index w/ wilders smoothing for an array of price history.
+Computes relative strength index w/ wilders smoothing for price history.
 
 @param prices An array of price history.
 @param n The number of candlesticks to use in the computations.
-"""
-def smoothed_rsi(prices: pd.Series, period: int = 14) -> np.ndarray:
-    rsi = np.full(len(prices), np.nan)
 
+@Note: Input should be passed in descending order by window_start.
+@Note: Prices indices must be symbol labels.
+"""
+def smoothed_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     if (period <= 0):
         raise ValueError("Period must be greater than zero.")
+    if not all(isinstance(label, str) for label in prices.index):
+        raise ValueError("The index of the input series of prices must be futures symbols.")
 
-    if (len(prices) <= period): return rsi
+    
+    output = np.full(len(prices), np.nan)
 
-    diff = -np.diff(prices)
+    for positions in prices.groupby(level=0, sort=False).indices.values():
+        price = prices.iloc[np.array(positions)]
+        rsi = np.full(len(price), np.nan)
 
-    avg_gain = np.full(len(prices), np.nan)
-    avg_loss = np.full(len(prices), np.nan)
+        if (len(price) <= period): 
+            continue
 
-    k: int = len(prices) - period - 1
-    window = diff[k: k + period]
-    avg_gain[k] = np.sum(window[window > 0]) / period
-    avg_loss[k] = -np.sum(window[window < 0]) / period
+        diff = -np.diff(price)
 
-    if avg_gain[k] == 0 and avg_loss[k] == 0:
-        rsi[k] = 50.0
-    elif avg_loss[k] == 0:
-        rsi[k] = 100.0
-    else:
-        RS = avg_gain[k] / avg_loss[k]
-        rsi[k] = 100 * (RS / (1 + RS))
+        avg_gain = np.full(len(price), np.nan)
+        avg_loss = np.full(len(price), np.nan)
 
-    for i in range(k, 0, -1):
-        gain = max(diff[i - 1], 0)
-        loss =  max(-diff[i - 1], 0)
+        k: int = len(price) - period - 1
+        window = diff[k: k + period]
+        avg_gain[k] = np.sum(window[window > 0]) / period
+        avg_loss[k] = -np.sum(window[window < 0]) / period
 
-        avg_gain[i - 1] = ((period - 1) * avg_gain[i] + gain) / period
-        avg_loss[i-1] = ((period - 1) * avg_loss[i] + loss) / period
-
-        if avg_gain[i - 1] == 0 and avg_loss[i - 1] == 0:
-            rsi[i - 1] = 50.0
-        elif avg_loss[i - 1] == 0:
-            rsi[i - 1] = 100.0
+        if avg_gain[k] == 0 and avg_loss[k] == 0:
+            rsi[k] = 50.0
+        elif avg_loss[k] == 0:
+            rsi[k] = 100.0
         else:
-            RS = avg_gain[i - 1] / avg_loss[i - 1]
-            rsi[i - 1] = 100 * (RS / (1 + RS))
+            RS = avg_gain[k] / avg_loss[k]
+            rsi[k] = 100 * (RS / (1 + RS))
 
-    return rsi
+        for i in range(k, 0, -1):
+            gain = max(diff[i - 1], 0)
+            loss =  max(-diff[i - 1], 0)
 
+            avg_gain[i - 1] = ((period - 1) * avg_gain[i] + gain) / period
+            avg_loss[i-1] = ((period - 1) * avg_loss[i] + loss) / period
+
+            if avg_gain[i - 1] == 0 and avg_loss[i - 1] == 0:
+                rsi[i - 1] = 50.0
+            elif avg_loss[i - 1] == 0:
+                rsi[i - 1] = 100.0
+            else:
+                RS = avg_gain[i - 1] / avg_loss[i - 1]
+                rsi[i - 1] = 100 * (RS / (1 + RS))
+
+        output[positions] = rsi
+
+    return pd.Series(output, prices.index, name="rsi")
 
 """
 Computes the p period simple moving average
@@ -78,20 +90,30 @@ Computes the p period simple moving average
     SMA_M: M \\to M-p+1 = 1/p \\sum_{i=m-p+1}^M x_i
     SMA_{M+1}: M+1 \\to m-p+2 = SMA_{M} + 1/p(x_{M+1} - x_{M-p+1})
 """
-def sma(prices: pd.Series, p: int = 20) -> np.ndarray:
+def sma(prices: pd.Series, p: int = 20) -> pd.Series:
     if p <= 0 or p > len(prices):
-        return np.array([])
+        raise ValueError("p must be between 1 and len(prices)")
 
-    n: int = len(prices)
-    sma: np.ndarray = np.full(n, np.nan)
+    output = np.full(len(prices), np.nan)
+    for positions in prices.groupby(level=0).indices.values():
+        price = prices.iloc[np.array(positions)]
 
-    k: int = n - p
-    sma[k] = np.sum(prices.iloc[k : k + p]) / p
+        n: int = len(price)
 
-    for i in range(k, 0, -1):
-        sma[i - 1] = sma[i] + 1 / p * (prices.iloc[i - 1] - prices.iloc[i - 1 + p])
+        if n < p:
+            continue
 
-    return sma
+        sma: np.ndarray = np.full(n, np.nan)
+
+        k: int = n - p
+        sma[k] = np.sum(price.iloc[k : k + p]) / p
+
+        for i in range(k, 0, -1):
+            sma[i - 1] = sma[i] + 1 / p * (price.iloc[i - 1] - price.iloc[i - 1 + p])
+
+        output[positions] = sma
+
+    return pd.Series(output, index=prices.index, name="sma")
 
 """
 Computes the p period weighted moving average.
@@ -100,22 +122,29 @@ The computation is simply a weighted mean
 @param prices An array of price history.
 @param p Period length.
 """
-def wma(prices: pd.Series, period: int = 14) -> np.ndarray:
+def wma(prices: pd.Series, period: int = 14) -> pd.Series:
     if (period <= 0):
         raise ValueError("Period must be greater than zero.")
 
-    W = np.full(len(prices), np.nan)
+    output = np.full(len(prices), np.nan)
 
-    if (len(prices) < period):
-        return W
+    for positions in prices.groupby(level=0).indices.values():
+        price = prices.iloc[np.array(positions)]
+        W = np.full(len(price), np.nan)
+
+        if (len(price) < period):
+            continue
     
-    weights = np.arange(period, 0, -1)
-    weight_sum = weights.sum()
+        weights = np.arange(period, 0, -1)
+        weight_sum = weights.sum()
 
-    for i in range(len(prices) - period + 1):
-        window = prices.iloc[i: i + period]
-        W[i] = np.sum(window * weights)  / weight_sum
-    return W
+        for i in range(len(price) - period + 1):
+            window = price.iloc[i: i + period]
+            W[i] = np.sum(window * weights)  / weight_sum
+
+        output[positions] = W
+
+    return pd.Series(output, index=prices.index, name="wma")
 
 
 """
@@ -132,17 +161,28 @@ Computes the p period exponential moving average.
 More info can be found in the repos reference doc.
 """
 def ema(prices: pd.Series, period: int = 15) -> pd.Series:
-    if (len(prices) == 0): return pd.Series(index=prices.index)
+    if len(prices) < period or period <= 0:
+        raise ValueError("period must be between 1 and len(prices).")
 
-    n: int = len(prices)-1
-    alpha: np.float128 = np.float128(2) / np.float128((period + 1))
-    ret: np.ndarray = np.full(n+1, np.nan)
 
-    ret[n] = prices.iloc[n]
-    for i in range(n-1, -1, -1): 
-        ret[i] = alpha * prices.iloc[i] + (1-alpha) * ret[i+1]
+    alpha: float = 2.0 / (period + 1)
+    output = np.full(len(prices), np.nan)
+    for positions in prices.groupby(level=0).indices.values():
+        price = prices.iloc[np.array(positions)]
 
-    return pd.Series(ret, index=prices.index)
+        if len(price) < period:
+            continue
+
+        n: int = len(price)-1
+        ema = np.full(n+1, np.nan)
+
+        ema[n] = price.iloc[n]
+        for i in range(n-1, -1, -1): 
+            ema[i] = alpha * price.iloc[i] + (1-alpha) * ema[i+1]
+
+        output[positions] = ema
+
+    return pd.Series(output, index=prices.index, name="ema")
 
 """
 Calcuates Bollinger Band Percent B (%B).
@@ -154,22 +194,43 @@ Calcuates Bollinger Band Percent B (%B).
 @return Array of %b values.
 """
 def percent_b(prices: pd.Series, period: int = 20, std: int = 2) -> pd.Series:
-    if (period < 0 or period > len(prices)):
-        return pd.Series([])
+    if (period <= 0 or period > len(prices)):
+        raise ValueError("period must be between 1 and len(prices).")
 
-    rolling_mean: np.ndarray = np.convolve(
-        prices, np.ones(period) / period, mode="valid"
-    )
+    output: np.ndarray = np.full(len(prices), np.nan)
+    weights = np.ones(period) / period
 
-    rolling_std: np.ndarray = np.std(
-        [prices.iloc[i : i + period] for i in range(len(prices) - period + 1)],
-        axis=1,
-    )
+    for positions in prices.groupby(level=0).indices.values():
+        price = prices.iloc[np.array(positions)]
 
-    upper_band = rolling_mean + std * rolling_std
-    lower_band = rolling_mean - std * rolling_std
-    ret =  pd.Series((prices.iloc[:len(prices) - period + 1] - lower_band) / (upper_band - lower_band))
-    return ret
+        if len(price) < period:
+            continue
+
+        count: int = len(price) - period + 1
+
+        rolling_mean: np.ndarray = np.convolve(
+            price, weights, mode="valid"
+        )
+
+        rolling_std: np.ndarray = np.std(
+            [price.iloc[i : i + period] for i in range(count)],
+            axis=1,
+        )
+
+        lower_band: np.ndarray = rolling_mean - std * rolling_std
+        band_width = 2 * std * rolling_std
+
+        values = np.full(count, np.nan)
+        np.divide(
+                (price.iloc[:count] - lower_band),
+                band_width,
+                out=values,
+                where=band_width > 0
+        )
+
+        output[positions[:count]] = values
+
+    return pd.Series(output, index=prices.index, name="percent_b")
 
 def msi(): 
     ...
@@ -183,36 +244,48 @@ Calculates VWAP.
 """
 def vwap(df: pd.DataFrame) -> pd.Series: 
     data = df.copy()
+
     data['price'] = (df['high'] + df['low'] + df['close']) / 3
+    data["_position"] = np.arange(data.shape[0])
+
+    data = data.sort_values("real_timestamp", kind='stable')
 
     def calcuate_vwap(group: pd.DataFrame) -> pd.DataFrame:
         vwap = (group['price'] * group['volume']).cumsum() / group['volume'].cumsum()
         group['VWAP'] = vwap
         return group
 
-    data = data.sort_values("real_timestamp")
+    vwap_df: pd.DataFrame = data.groupby(['session_end_date', 'ticker']).apply(calcuate_vwap, include_groups=False) # type:ignore
 
-    vwap_df: pd.DataFrame = data.groupby('session_end_date').apply(calcuate_vwap, include_groups=False) # type:ignore
-
-    vwap_df = vwap_df.sort_values('real_timestamp', ascending=False)
-    return vwap_df['VWAP'].reset_index(drop=True)
+    vwap = vwap_df.sort_values('_position')['VWAP'].to_numpy()
+    return pd.Series(vwap, index=df.index, name="VWAP")
 
 
 """
 Computes a rolling window standard deviation as a measure of market volatility on recent movements.
 """
 def rolling_std(returns: pd.Series, period: int=14) -> pd.Series:
-    if len(returns) < period:
-        raise ValueError(f"Period cannot exceed length of the input Series. {period} > {len(returns)}") 
-    # Log Returns? 
-    rolling_std = np.std(
-        [returns.iloc[i: i + period] for i in range(0, len(returns) - period + 1)],
-        axis=1,
-    )
+    if (period <= 0 or period > len(returns)):
+        raise ValueError("period must be between 1 and len(prices).")
 
-    result = pd.Series(np.nan, index=returns.index, dtype=float)
-    result.iloc[:len(rolling_std)] = rolling_std
-    return result
+    # Log Returns? 
+    output = np.full(len(returns), np.nan)
+    for positions in returns.groupby(level=0).indices.values():
+        current = returns.iloc[np.array(positions)]
+
+        if (len(current) < period):
+            continue
+
+        count = len(current) - period + 1
+
+        rolling_std = np.std(
+                [current.iloc[i: i + period] for i in range(0, count)],
+                axis=1,
+        )
+
+        output[positions[:count]] = rolling_std
+
+    return pd.Series(output, index=returns.index, name="rolling_std")
 
 def alpha():
     ...
