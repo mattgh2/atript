@@ -18,18 +18,15 @@ from .indicators import (
     rolling_std
 )
 
-def preprocess(ticker: str, resolution: str) -> None:
+def preprocess(ticker: str, resolution: str, data_dir: Path) -> None:
     processed_path: Path = Path(PROCESSED_DATA_DIR) / ticker
-    raw_path: Path = Path(RAW_DATA_DIR) / ticker
-
     processed_path.mkdir(exist_ok=True, parents=True)
 
-    data: pd.DataFrame | None = load_prior_data(raw_path, ticker)
+    data: pd.DataFrame | None = load_prior_data(data_dir, ticker)
 
     if data is None:
         print(f"No data available for {ticker}.")
         return
-
 
     print(f"Processing {data.shape[0]} records for {ticker}.")
 
