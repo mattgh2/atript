@@ -1,3 +1,4 @@
+import pandas as pd
 from datetime import date
 import re
 from typing import Literal
@@ -45,21 +46,21 @@ class FuturesOHLC(BaseModel):
         return datetime.fromtimestamp(
             window_start / 1_000_000_000, tz=timezone.utc
         )
-    
 
-def validate_data(observations: Iterable[FuturesAgg | bytes]) -> list[FuturesOHLC]:
+
+def validate_data(observations: list[dict]) -> pd.DataFrame:
     validated: list[FuturesOHLC] = []
     for observation in observations:
         try:
-            validated.append(FuturesOHLC.model_validate(vars(observation)))
+            validated.append(FuturesOHLC.model_validate(observation))
         except ValidationError as e:
-            print(str(e))
-    return validated
+            raise ValueError(f'{str(e)}') from e
+            # print(str(e))
 
+    return pd.DataFrame.from_records(vars(d) for d in validated)
 
 
 class CommandArgs(BaseModel):
-    ticker: str = Field(min_length=1)
     resolution: str = Field(min_length=1)
     command: str = Field(min_length=1)
 
@@ -75,14 +76,30 @@ class CommandArgs(BaseModel):
         return res
 
 class FetchLookbackArgs(CommandArgs):
+    ticker: str = Field(min_length=1)
     period: Literal["days", "weeks", "months", "years"]
     depth: int = Field(gt=0)
 
 
 class FetchLatestArgs(CommandArgs):
-    ...
+    ticker: str = Field(min_length=1)
+
+class FetchTrainArgs(CommandArgs):
+    contract: str = Field(min_length=1)
+    years: int = Field(gt=0)
+    hold_out: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_train(self) -> Self:
+        if self.years * 12 <= self.hold_out:
+            raise ValueError("hold_out must be less than years.")
+
+        self.contract = self.contract.upper()
+        return self
+
 
 class FetchRangeArgs(CommandArgs):
+    ticker: str = Field(min_length=1)
     begin: date
     end: date
 
@@ -94,6 +111,7 @@ class FetchRangeArgs(CommandArgs):
 
 
 class ModelArgs(CommandArgs):
+    ticker: str = Field(min_length=1)
     pred_length: int = Field(gt=0)
     target: str = Field(default="returns", min_length=1)
     store_weights: bool = Field(default=False)
@@ -124,9 +142,9 @@ class ModelArgs(CommandArgs):
         return self
 
 
-
 class PreprocessArgs(CommandArgs):
-    ...
+    ticker: str = Field(min_length=1)
+    train: bool = Field(default=False)
 
 class ContractSpec(BaseModel):
     contract: str
@@ -142,7 +160,6 @@ class TradingFeeUpdates(BaseModel):
     exit_fee: float | None = Field(ge=0, default=None)
     entry_commission: float | None = Field(ge=0, default=None)
     exit_commission: float | None = Field(ge=0, default=None)
-
 
 
 class TradingFees(BaseModel):
@@ -177,6 +194,8 @@ def validate_input(args: dict):
             return FetchLookbackArgs.model_validate(args)
         case ("fetch", "range"):
             return FetchRangeArgs.model_validate(args)
+        case ("fetch", "train"):
+            return FetchTrainArgs.model_validate(args)
         case ("preprocess", _):
             return PreprocessArgs.model_validate(args)
         case ("model", _):
@@ -185,7 +204,3 @@ def validate_input(args: dict):
             return TradingFeeUpdates.model_validate(args)
 
     return CommandArgs.model_validate(args)
-
-
-
-
