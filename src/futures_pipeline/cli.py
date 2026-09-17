@@ -5,8 +5,12 @@ from argparse import _SubParsersAction
 def create_parser() -> ArgumentParser:
 
     shared = ArgumentParser(add_help=False, argument_default=SUPPRESS)
-    shared.add_argument("-t", "--ticker", type=str)
-    shared.add_argument("-r", "--resolution", type=str)
+    shared.add_argument("--symbol", "-s", help="Product code or contract ticker, e.g. MES or MESU6")
+    shared.add_argument("--resolution", "-r", type=str, help=(
+            "The size of each aggregate candle, specified as a number "
+            "followed by a unit: sec, min, hour, session, week, month, quarter, or year."
+            )
+    )
 
     parser = ArgumentParser(parents=[shared], argument_default=SUPPRESS)
 
@@ -47,8 +51,9 @@ def create_preprocess_parser(subparsers: _SubParsersAction, common_args: Argumen
     if common_args is None:
         common_args = ArgumentParser(add_help=False)
 
-    preproc_parser: ArgumentParser = subparsers.add_parser("preprocess", parents=[common_args], argument_default=SUPPRESS)
+    preproc_parser: ArgumentParser = subparsers.add_parser("preprocess", argument_default=SUPPRESS)
     preproc_parser.add_argument("--train", "-T", action="store_true", help="Preprocess training data.")
+
     return preproc_parser
 
 def create_model_parser(subparsers: _SubParsersAction) -> None:

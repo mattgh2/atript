@@ -207,22 +207,33 @@ Loads stored data from disk from a range of dates
       If begin is omited, the function will return all data from 
       the least recent trading day to specified end date.
 """
-def load_prior_data(data_dir: Path,
-    ticker: str, begin: str = "", end: str = ""
+def load_train(symbol: str, data_dir: Path):
+    data = pd.read_parquet(f"{data_dir / symbol}-train.parquet")
+    if data.empty:
+        raise ValueError(f"No Data exists for {symbol}.")
+    return data
+
+
+def load_prior_data(
+    data_dir: Path, symbol: str, begin: str = "", end: str = "", train: bool = False
 ) -> pd.DataFrame | None:
+
     if not data_dir.is_dir():
         return None
 
+    if train:
+        return load_train(symbol, data_dir)
+
     if not begin:
         start_date = min(
-            date.fromisoformat(file.stem.removeprefix(f"{ticker}-"))
+            date.fromisoformat(file.stem.removeprefix(f"{symbol}-"))
             for file in data_dir.iterdir()
             if (file.is_file())
         )
     else:
         start_date = date.fromisoformat(begin) if isinstance(begin, str) else begin
     if not end:
-        end_date = max( date.fromisoformat(file.stem.removeprefix(f"{ticker}-"))
+        end_date = max( date.fromisoformat(file.stem.removeprefix(f"{symbol}-"))
             for file in data_dir.iterdir()
             if (file.is_file())
         )
@@ -233,7 +244,7 @@ def load_prior_data(data_dir: Path,
         f
         for f in data_dir.iterdir()
         if start_date
-        <= date.fromisoformat(f.stem.removeprefix(f"{ticker}-"))
+        <= date.fromisoformat(f.stem.removeprefix(f"{symbol}-"))
         <= end_date
     ]
     if not files:

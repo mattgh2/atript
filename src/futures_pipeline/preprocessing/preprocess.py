@@ -1,7 +1,7 @@
 import pandas as pd
-from ..datareader import load_prior_data
+from ..datareader import load_prior_data, load_train
 from pathlib import Path
-from ..config import PROCESSED_DATA_DIR, RAW_DATA_DIR
+from ..config import PROCESSED_DATA_DIR
 from ..typedefs import CandleResolution
 import numpy as np
 from .indicators import (
@@ -18,17 +18,18 @@ from .indicators import (
     rolling_std
 )
 
-def preprocess(ticker: str, resolution: str, data_dir: Path) -> None:
-    processed_path: Path = Path(PROCESSED_DATA_DIR) / ticker
+
+def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False) -> None:
+    processed_path: Path = Path(PROCESSED_DATA_DIR) / symbol
     processed_path.mkdir(exist_ok=True, parents=True)
 
-    data: pd.DataFrame | None = load_prior_data(data_dir, ticker)
+    data: pd.DataFrame | None = load_prior_data(data_dir, symbol, train=train)
 
     if data is None:
-        print(f"No data available for {ticker}.")
+        print(f"No data available for {symbol}.")
         return
 
-    print(f"Processing {data.shape[0]} records for {ticker}.")
+    print(f"Processing {data.shape[0]} records for {symbol}.")
 
 
 
@@ -69,7 +70,7 @@ def preprocess(ticker: str, resolution: str, data_dir: Path) -> None:
             data['window_start'],
             utc=True,
             errors="coerce"
-    )
+    ).dt.tz_convert("America/Chicago")
 
     missing_raw = data[raw_columns].isna().any(axis=1)
     if missing_raw.any():
@@ -86,8 +87,9 @@ def preprocess(ticker: str, resolution: str, data_dir: Path) -> None:
 
     candle_resolution: CandleResolution = CandleResolution(resolution)
 
-    data["returns"] = get_returns(data["close"])
+    data.set_index("ticker")
 
+    data["returns"] = get_returns(data["close"])
 
     data["rsi"] = smoothed_rsi(data["close"])
     data["percent_b"] = percent_b(data["close"])
@@ -128,8 +130,8 @@ def preprocess(ticker: str, resolution: str, data_dir: Path) -> None:
     # Write data to parquete files.
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
-        path: str = f"{PROCESSED_DATA_DIR}/{ticker}/{ticker}-{day}.parquet"
-        prior: pd.DataFrame | None = load_prior_data(processed_path, ticker, day, day)
+        path: str = f"{processed_path}/{symbol}-{day}.parquet"
+        prior: pd.DataFrame | None = load_prior_data(processed_path, symbol, day, day)
         if prior is not None:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
                 subset="real_timestamp"

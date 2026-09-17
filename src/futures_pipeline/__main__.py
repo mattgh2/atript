@@ -47,13 +47,13 @@ def main():
             massive_parameters: MassiveParameters = {
                 "sort": "window_start.desc",
                 "resolution": args.resolution,
-                "ticker": args.ticker,
+                "ticker": args.symbol,
             }
             fetch_context(
                 massive_parameters,
                 create_massive_client(settings.massive_api_key),
                 args,
-                RAW_DATA_DIR / args.ticker
+                RAW_DATA_DIR / args.symbol
             )
         case FetchTrainArgs():
             fetch_train(
@@ -64,11 +64,11 @@ def main():
 
         case PreprocessArgs():
             if args.train:
-                data_dir = TRAINING_DATA_DIR / args.ticker
+                data_dir = TRAINING_DATA_DIR / args.symbol
             else:
-                data_dir = RAW_DATA_DIR / args.ticker
+                data_dir = RAW_DATA_DIR / args.symbol
 
-            preprocess(args.ticker, args.resolution, data_dir)
+            preprocess(args.symbol, args.resolution, data_dir, args.train)
 
         case ModelArgs():
             hf_token = settings.hf_token

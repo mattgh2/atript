@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 class FuturesOHLC(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    ticker: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
     open: float = Field(allow_inf_nan=False)
     high: float = Field(allow_inf_nan=False)
     low: float = Field(allow_inf_nan=False)
@@ -76,13 +76,13 @@ class CommandArgs(BaseModel):
         return res
 
 class FetchLookbackArgs(CommandArgs):
-    ticker: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
     period: Literal["days", "weeks", "months", "years"]
     depth: int = Field(gt=0)
 
 
 class FetchLatestArgs(CommandArgs):
-    ticker: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
 
 class FetchTrainArgs(CommandArgs):
     contract: str = Field(min_length=1)
@@ -99,7 +99,7 @@ class FetchTrainArgs(CommandArgs):
 
 
 class FetchRangeArgs(CommandArgs):
-    ticker: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
     begin: date
     end: date
 
@@ -143,7 +143,7 @@ class ModelArgs(CommandArgs):
 
 
 class PreprocessArgs(CommandArgs):
-    ticker: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
     train: bool = Field(default=False)
 
 class ContractSpec(BaseModel):

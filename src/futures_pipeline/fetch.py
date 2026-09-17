@@ -38,20 +38,22 @@ def fetch_context(
         case FetchRangeArgs():
             data = fetch_range(args.begin, args.end, massive_params, massive_client)
 
-    print(f"Fetched {data.shape[0]:,} observations for {args.ticker}")
+    print(f"Fetched {data.shape[0]:,} observations for {args.symbol}")
+
+    data = validate_data(list(data.to_dict(orient='index').values()))
 
     # Write data to parquete files.
     data_dir.mkdir(parents=True, exist_ok=True)
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
-        prior: pd.DataFrame | None = load_prior_data(data_dir, args.ticker, day, day)
+        prior: pd.DataFrame | None = load_prior_data(data_dir, args.symbol, day, day)
 
         if prior is not None:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
                 subset="window_start"
             )
 
-        path: str = f"{data_dir}/{args.ticker}-{day}.parquet"
+        path: str = f"{data_dir}/{args.symbol}-{day}.parquet"
         rows.to_parquet(path, index=False)
         print(f"Wrote {path} ({rows.shape[0]:,} rows)")
 
@@ -62,9 +64,9 @@ def fetch_train(massive_client: RESTClient, args: FetchTrainArgs, data_dir: Path
     )
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    validated: pd.DataFrame = validate_data(list(data.to_dict(orient='index').values()))
+    data = validate_data(list(data.to_dict(orient='index').values()))
 
     # Store
-    validated.to_parquet(f"{data_dir}/{args.contract}-train.parquet")
+    data.to_parquet(f"{data_dir}/{args.contract}-train.parquet")
 
 
