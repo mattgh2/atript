@@ -16,7 +16,12 @@ Computes the returns for a sequence of candlestick closes.
 @Note Assumes close is ordered by most recent observation to least recent observation.
 """
 def get_returns(close: pd.Series) -> pd.Series:
-    return pd.Series(-np.diff(close) / close.iloc[1:]).reset_index(drop=True)
+    returns = np.full(len(close), np.nan)
+    for positions in close.groupby(level=0).indices.values():
+        symbol_close = close.iloc[np.array(positions)]
+        returns[positions[:-1]] = -np.diff(symbol_close) / symbol_close.iloc[1:]
+    return pd.Series(returns, index=close.index, name="returns")
+    
 
 """
 Computes relative strength index w/ wilders smoothing for price history.
