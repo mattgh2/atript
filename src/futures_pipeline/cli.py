@@ -51,7 +51,7 @@ def create_preprocess_parser(subparsers: _SubParsersAction, common_args: Argumen
     if common_args is None:
         common_args = ArgumentParser(add_help=False)
 
-    preproc_parser: ArgumentParser = subparsers.add_parser("preprocess", argument_default=SUPPRESS)
+    preproc_parser: ArgumentParser = subparsers.add_parser("preprocess", parents=[common_args], argument_default=SUPPRESS)
     preproc_parser.add_argument("--train", "-T", action="store_true", help="Preprocess training data.")
 
     return preproc_parser
