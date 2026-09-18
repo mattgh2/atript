@@ -31,7 +31,6 @@ def fine_tuned_model(ticker, target, pred_length, quantiles):
             # train_data  = []
     )
 
-
 def run_model(
     ticker,
     target,
@@ -59,7 +58,8 @@ def run_model(
     market_activity = ['volume']
     time = ['has_time_gap', 'log_elapsed_intervals']
 
-    covariates: list = [*volatility, *trend, *momentum, *relative_position, *market_activity, *time]
+    # covariates: list = [*volatility, *trend, *momentum, *relative_position, *market_activity, *time]
+    covariates: list = []
 
     context_df = (
         data[["model_timestamp", "ticker", target, *covariates]]
