@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 class FuturesOHLC(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    symbol: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)
     open: float = Field(allow_inf_nan=False)
     high: float = Field(allow_inf_nan=False)
     low: float = Field(allow_inf_nan=False)
