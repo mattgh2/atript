@@ -152,7 +152,6 @@ class ContractSpec(BaseModel):
     price_per_tick: float  = Field(gt=0, allow_inf_nan=False)
     multiplier: float = Field(gt=0, allow_inf_nan=False)
 
-
 class TradingFeeUpdates(BaseModel):
     # model_config = ConfigDict(extra="forbid")
 
