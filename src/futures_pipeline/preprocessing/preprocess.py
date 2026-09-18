@@ -87,7 +87,17 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
 
     candle_resolution: CandleResolution = CandleResolution(resolution)
 
-    data.set_index("ticker")
+    data = get_time_features(data, candle_resolution)
+
+    # Set return calcuated between missing observations within the same session to nan.
+    previous = data.groupby('ticker')['session_end_date'].shift(-1)
+    missing_within_session = (
+            data['has_time_gap'].eq(1) & data['session_end_date'].eq(previous)
+    )
+    data.loc[missing_within_session, 'returns'] = np.nan
+
+
+    data = data.set_index("ticker")
 
     data["returns"] = get_returns(data["close"])
 
@@ -97,33 +107,38 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
 
     # Trend indicators.
     data["ema"] = ema(data["close"])
-    data['close_to_ema'] = data['close'] / data["ema"] - 1
-    data['ema_slope'] = data['ema'] / data['ema'].shift(-1) - 1
-    data['ema_slope_4'] = data['ema'] / data['ema'].shift(-4) - 1
 
+    # TODO: These need to be grouped by tickerjk
+    # data['close_to_ema'] = data['close'] / data["ema"] - 1
+    # data['ema_slope'] = data['ema'] / data['ema'].shift(-1) - 1
+    # data['ema_slope_4'] = data['ema'] / data['ema'].shift(-4) - 1
 
     # Volatility.
     data['rolling_std_20'] = rolling_std(data['returns'], 20)
-    data['intrabar_range'] = (data['high'] - data['low']) / data['close']
-    previous_close = data['close'].shift(-1)
-    data['true_range'] = pd.concat(
-            [
-                data['high'] - data['low'],
-                (data['high'] - previous_close).abs(),
-                (data['low'] - previous_close).abs()
-            ], axis=1
-    ).max(axis=1)
-    data['normalized_true_range'] = data["true_range"] / data['close']
 
-    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.
-    data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
+    # TODO: Group by ticker
+    # data['intrabar_range'] = (data['high'] - data['low']) / data['close']
+    # previous_close = data['close'].shift(-1)
+    # data['true_range'] = pd.concat(
+    #         [
+    #             data['high'] - data['low'],
+    #             (data['high'] - previous_close).abs(),
+    #             (data['low'] - previous_close).abs()
+    #         ], axis=1
+    # ).max(axis=1)
+    # data['normalized_true_range'] = data["true_range"] / data['close']
+
+    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.           
+    # TODO: Group by ticker
+    # data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
 
 
-    data = get_time_features(data, candle_resolution)
 
     data = data.replace([np.inf, -np.inf], np.nan)
-    data = data.dropna(subset=model_features).reset_index(drop=True)
+    data = data.reset_index()
 
+    # Chronos-2 supports nan values.
+    # data = data.dropna(subset=model_features).reset_index(drop=True)
 
     data = convert_timestamps(data, candle_resolution)
 
@@ -151,7 +166,7 @@ def convert_timestamps(df: pd.DataFrame, resolution: CandleResolution) -> pd.Dat
     model_step = df.groupby("ticker").cumcount(ascending=False)
 
     start = pd.Timestamp("2000-01-01")
-    df["model_timestamp"] = start + pd.to_timedelta(model_step * resolution.length, unit=resolution.to_timedelta_unit()) # type: ignore
+    df["model_timestamp"] = start + pd.to_timedelta(model_step * resolution.length, unit=resolution.to_timedelta_unit())  # type: ignore
 
     return df
 
@@ -162,9 +177,8 @@ def get_time_features(df: pd.DataFrame, resolution: CandleResolution) -> pd.Data
         resolution.length, unit=resolution.to_timedelta_unit()
     )
 
-    # NOTE: Groupby ticker before shifting if considering multiple tickers in a single dataset.
     elapsed_intervals = (
-        ((df["real_timestamp"] - df["real_timestamp"].shift(-1)) / interval_length) # type: ignore
+        ((df["real_timestamp"] - df.groupby("ticker")["real_timestamp"].shift(-1)) / interval_length)  # type: ignore
         .fillna(1.0)
         .astype("float32")
     )
