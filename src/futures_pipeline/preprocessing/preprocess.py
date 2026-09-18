@@ -1,7 +1,11 @@
 import pandas as pd
 from ..datareader import load_prior_data, load_train
+from ..datareader.readerutil import fetch_session_hours, get_product_code
 from pathlib import Path
-from ..config import PROCESSED_DATA_DIR
+from ..config import PROCESSED_DATA_DIR, load_settings
+from ..massive_client import create_massive_client
+from datetime import timedelta
+from dateutil.relativedelta import relativedelta
 from ..typedefs import CandleResolution
 import numpy as np
 from .indicators import (
@@ -31,15 +35,12 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
 
     print(f"Processing {data.shape[0]} records for {symbol}.")
 
-
-
     # prior_n: pd.DataFrame | None = load_last_n(
     #     raw_path, ticker, settings.indicator_lookback
     # )
 
     # Concatenate new data with the prior n observations needed to calculate indicators.
-    # if prior_n is not None:
-    #     data = pd.concat([data, prior_n], ignore_index=True)
+    # if prior_n is not None: data = pd.concat([data, prior_n], ignore_index=True)
 
     raw_columns = [
             "window_start",
@@ -90,12 +91,29 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
     data = get_time_features(data, candle_resolution)
 
     # Set return calcuated between missing observations within the same session to nan.
-    previous = data.groupby('ticker')['session_end_date'].shift(-1)
-    missing_within_session = (
-            data['has_time_gap'].eq(1) & data['session_end_date'].eq(previous)
-    )
-    data.loc[missing_within_session, 'returns'] = np.nan
+    # Use fetch_session_hours
+    # Perhaps store the hours info into the df  when fetching.
 
+    session_hours: dict[str, list] = fetch_session_hours(
+        get_product_code(symbol),
+        data["session_end_date"].min(),
+        data["session_end_date"].max(),
+    )
+
+    previous = data["real_timestamp"] - pd.to_timedelta(
+        candle_resolution.length, unit=candle_resolution.to_timedelta_unit()
+    )
+
+    # Previous timestamp in trading hours intervals
+
+    missing_prev = (data['has_time_gap'].eq(1) & data.apply(
+            lambda row: any(
+                opened_at <= previous < closed_at
+                for opened_at, closed_at in session_hours[row['session_end_date']]
+            ), axis=1
+    )).astype("int8")
+
+    data.loc[missing_prev, 'returns'] = np.nan
 
     data = data.set_index("ticker")
 
@@ -108,7 +126,7 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
     # Trend indicators.
     data["ema"] = ema(data["close"])
 
-    # TODO: These need to be grouped by tickerjk
+    # TODO: These need to be grouped by ticker
     # data['close_to_ema'] = data['close'] / data["ema"] - 1
     # data['ema_slope'] = data['ema'] / data['ema'].shift(-1) - 1
     # data['ema_slope_4'] = data['ema'] / data['ema'].shift(-4) - 1
@@ -128,11 +146,9 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
     # ).max(axis=1)
     # data['normalized_true_range'] = data["true_range"] / data['close']
 
-    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.           
+    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.
     # TODO: Group by ticker
     # data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
-
-
 
     data = data.replace([np.inf, -np.inf], np.nan)
     data = data.reset_index()
