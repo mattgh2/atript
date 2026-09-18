@@ -86,38 +86,16 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
         .reset_index(drop=True)
     )
 
+
     candle_resolution: CandleResolution = CandleResolution(resolution)
 
     data = get_time_features(data, candle_resolution)
 
-    # Set return calcuated between missing observations within the same session to nan.
-    # Use fetch_session_hours
-    # Perhaps store the hours info into the df  when fetching.
-
-    session_hours: dict[str, list] = fetch_session_hours(
-        get_product_code(symbol),
-        data["session_end_date"].min(),
-        data["session_end_date"].max(),
-    )
-
-    previous = data["real_timestamp"] - pd.to_timedelta(
-        candle_resolution.length, unit=candle_resolution.to_timedelta_unit()
-    )
-
-    # Previous timestamp in trading hours intervals
-
-    missing_prev = (data['has_time_gap'].eq(1) & data.apply(
-            lambda row: any(
-                opened_at <= previous < closed_at
-                for opened_at, closed_at in session_hours[row['session_end_date']]
-            ), axis=1
-    )).astype("int8")
-
-    data.loc[missing_prev, 'returns'] = np.nan
-
     data = data.set_index("ticker")
-
     data["returns"] = get_returns(data["close"])
+
+    missing_prev = get_missing_gaps(data, symbol, candle_resolution)
+    data.loc[missing_prev, 'returns'] = np.nan
 
     data["rsi"] = smoothed_rsi(data["close"])
     data["percent_b"] = percent_b(data["close"])
@@ -205,3 +183,52 @@ def get_time_features(df: pd.DataFrame, resolution: CandleResolution) -> pd.Data
     df['log_elapsed_intervals'] = log_interval
 
     return df
+
+def get_missing_gaps(data: pd.DataFrame, symbol: str, candle_resolution: CandleResolution) -> np.ndarray:
+
+    prev_observed = data.groupby('ticker', sort=False)['real_timestamp'].shift(-1)
+
+    session_hours: dict[str, list] = fetch_session_hours(
+        get_product_code(symbol),
+        data["session_end_date"].min(),
+        data["session_end_date"].max(),
+    )
+    if missing := set(data['session_end_date'].unique()) - set(session_hours):
+        raise ValueError(f"Missing session schedules for: {sorted(missing)}")
+
+    trading_intervals = sorted(
+            (opened_at, closed_at)
+            for hours in session_hours.values()
+            for opened_at, closed_at in hours
+    )
+
+    interval =  pd.to_timedelta(
+        candle_resolution.length, unit=candle_resolution.to_timedelta_unit()
+    )
+
+    def contains_missing_candle(older: pd.Timestamp, current: pd.Timestamp) -> bool:
+        for opened_at, closed_at in trading_intervals:
+            if closed_at <= older or opened_at >= current:
+                continue
+            if older < opened_at:
+                candidate = opened_at
+            else:
+                steps = ((older - opened_at) // interval) + 1
+                candidate = opened_at + steps * interval
+            if candidate < current and candidate < closed_at:
+                return True
+
+        return False
+
+    missing_prev = np.zeros(len(data), dtype=bool)
+    gap_positions = np.flatnonzero(
+            data['has_time_gap'].to_numpy(dtype=bool)
+    )
+
+    for position in gap_positions:
+        older = prev_observed.iloc[position]
+        current = data['real_timestamp'].iloc[position]
+        if pd.notna(older):
+            missing_prev[position] = contains_missing_candle(older,current)
+
+    return missing_prev
