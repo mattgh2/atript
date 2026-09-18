@@ -13,7 +13,7 @@ import re
 from collections import defaultdict
 from ..typedefs import CandleResolution
 from enum import IntEnum
-from .readerutil import session_bounds, mes_roll_date, fetch_session_dates
+from .readerutil import session_bounds, mes_roll_date, fetch_session_dates, get_product_code
 
 """
 Fetches OHLC data from Massive.com.
@@ -52,10 +52,7 @@ def fetch_contract_spec(ticker: str, client: RESTClient) -> ContractSpec:
     if contract is None:
         raise ValueError(f"Failed to fetch contract for {ticker}.")
 
-    match = re.match(r"([A-Z0-9]+?)[FGHJKMNQUVXZ]\d{1,4}", ticker)
-    if not match:
-        raise ValueError(f"Error parsing product name from {ticker}.")
-    product_code = match.group(1)
+    product_code = get_product_code(ticker)
 
     product: FuturesProduct | None = cast(
         FuturesProduct | None,
