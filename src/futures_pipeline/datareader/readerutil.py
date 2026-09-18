@@ -47,6 +47,10 @@ def fetch_session_dates(
     )
 
     df = pd.DataFrame.from_records(vars(d) for d in schedules)
+
+    if df.empty:
+        raise ValueError('Failed to fetch schedule data.')
+
     df = df[df['event'].isin(['open','close'])]
 
     df['timestamp'] = df['timestamp'].map(lambda t: pd.Timestamp(t, tz="America/Chicago"))
@@ -77,7 +81,7 @@ def fetch_session_hours(product: str, begin: str, end: str, client: RESTClient |
 
     df = pd.DataFrame.from_records(vars(d) for d in schedules)
     if df.empty:
-        return dict()
+        raise ValueError('Failed to fetch schedule data.')
 
     df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors="coerce").dt.tz_convert("America/Chicago")
 
