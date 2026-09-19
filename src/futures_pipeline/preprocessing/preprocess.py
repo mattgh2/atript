@@ -17,6 +17,8 @@ from .indicators import (
     msi,
     vwap,
     wma,
+    dma,
+    t3ma,
     vwap,
     ema,
     rolling_std
@@ -51,16 +53,6 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
             "close",
             "volume",
             "session_end_date"
-    ]
-    model_features = [
-            "returns",
-            "volume",
-            "percent_b",
-            "rsi",
-            "close_to_ema",
-            "close_to_vwap",
-            "has_time_gap",
-            "log_elapsed_intervals"
     ]
 
     missing_cols = set(raw_columns) - set(data.columns)
@@ -97,12 +89,16 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
     missing_prev = get_missing_gaps(data, symbol, candle_resolution)
     data.loc[missing_prev, 'returns'] = np.nan
 
+    # Momentum
     data["rsi"] = smoothed_rsi(data["close"])
     data["percent_b"] = percent_b(data["close"])
     data["VWAP"] = vwap(data)
 
     # Trend indicators.
     data["ema"] = ema(data["close"])
+    data['dma'] = dma(data['close'])
+    data['t3ma'] = t3ma(data['close'])
+    data['sma'] = sma(data['close'])
 
     # TODO: These need to be grouped by ticker
     # data['close_to_ema'] = data['close'] / data["ema"] - 1
