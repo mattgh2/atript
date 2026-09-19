@@ -8,22 +8,10 @@ from datetime import timedelta
 from dateutil.relativedelta import relativedelta
 from ..typedefs import CandleResolution
 import numpy as np
-from .indicators import (
-    smoothed_rsi,
-    percent_b,
-    get_returns,
-    sma,
-    ema,
-    msi,
-    vwap,
-    wma,
-    dma,
-    t3ma,
-    vwap,
-    ema,
-    rolling_std
-)
-
+from .indicators.momentum import smoothed_rsi, RoC, fast_k, slow_k, vwap
+from .indicators.trend import ema, dma, sma, t3ma
+from .indicators.volatility import percent_b, rolling_std
+from .preproc_util import get_returns
 
 def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False) -> None:
     processed_path: Path = Path(PROCESSED_DATA_DIR) / symbol
@@ -36,13 +24,6 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
         return
 
     print(f"Processing {data.shape[0]} records for {symbol}.")
-
-    # prior_n: pd.DataFrame | None = load_last_n(
-    #     raw_path, ticker, settings.indicator_lookback
-    # )
-
-    # Concatenate new data with the prior n observations needed to calculate indicators.
-    # if prior_n is not None: data = pd.concat([data, prior_n], ignore_index=True)
 
     raw_columns = [
             "window_start",
