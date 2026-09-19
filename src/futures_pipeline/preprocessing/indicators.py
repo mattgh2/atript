@@ -22,13 +22,11 @@ def get_returns(close: pd.Series) -> pd.Series:
         returns[positions[:-1]] = -np.diff(symbol_close) / symbol_close.iloc[1:]
     return pd.Series(returns, index=close.index, name="returns")
     
-
 """
 Computes relative strength index w/ wilders smoothing for price history.
 
 @param prices An array of price history.
 @param n The number of candlesticks to use in the computations.
-
 @Note: Input should be passed in descending order by window_start.
 @Note: Prices indices must be symbol labels.
 """
@@ -292,7 +290,64 @@ def rolling_std(returns: pd.Series, period: int=14) -> pd.Series:
 
     return pd.Series(output, index=returns.index, name="rolling_std")
 
-def alpha():
-    ...
-def beta():
-    ...
+
+def t3ma(closes: pd.Series, alpha: float = .7, period: int = 15):
+    output: np.ndarray = np.full(len(closes), np.nan)
+    c1 = -alpha ** 3
+    c2 = 3 * alpha ** 2 + 3 * alpha ** 3
+    c3 = -6 * alpha ** 2 - 3 * alpha -  3 * alpha ** 3
+    c4 = 1 + 3 * alpha + alpha ** 3 + 3 * alpha ** 2
+
+    e: np.ndarray = np.full(7, np.nan, dtype=object)
+    for positions in closes.groupby(level=0).indices.values():
+        if len(positions) < period:
+            continue
+
+        e[0] = closes.iloc[np.array(positions)]
+        for i in range(1, len(e)):
+            e[i] = ema(e[i-1], period)
+        output[positions] = c1 * e[6] + c2 * e[5] + c3 * e[4] + c4 * e[3]
+
+    return pd.Series(output, index=closes.index, name='t3ma')
+
+
+def dma(
+    sma_values: pd.Series, displacement: int = 5,
+) -> pd.Series:
+    if displacement < 0:
+        raise ValueError("displacement must be nonnegative.")
+    return (
+        sma_values.groupby(level=0)
+        .shift(-displacement)
+        .rename("dma")
+    )
+
+# Fast stochastic oscillator.
+def fast_k(data: pd.DataFrame, period: int = 14):
+    output = np.full(data.shape[0], np.nan)
+    for positions in data.groupby('ticker').indices.values():
+        df = data.iloc[positions]
+        for i in range(df.shape[0] - period + 1):
+            low = df.iloc[i : i + period]['low'].min()
+            high = df.iloc[i : i + period]['high'].max()
+            percent_k = (df.iloc[i]['close'] - low) / (high - low) * 100
+            output[positions[i]] = percent_k
+    return pd.Series(output, index=data.index, name="fast_k")
+
+
+def slow_k(fast_k: pd.Series):
+    return sma(fast_k, p=3).rename("slow_k")
+
+def RoC(prices: pd.Series, period: int = 14):
+    output = np.full(len(prices), np.nan)
+    for positions in prices.groupby(level=0).indices.values():
+        price = prices.iloc[np.array(positions)]
+        if len(price) < period:
+            continue
+        roc = np.full(len(price), np.nan)
+        for i in range(len(price) - period):
+            roc[i] = 100 * (price.iloc[i] / price.iloc[i + period] - 1)
+        output[positions] = roc
+
+    return pd.Series(output, index=prices.index, name="RoC")
+
