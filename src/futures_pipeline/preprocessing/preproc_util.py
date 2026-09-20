@@ -14,3 +14,4 @@ def get_returns(close: pd.Series) -> pd.Series:
         symbol_close = close.iloc[np.array(positions)]
         returns[positions[:-1]] = -np.diff(symbol_close) / symbol_close.iloc[1:]
     return pd.Series(returns, index=close.index, name="returns")
+

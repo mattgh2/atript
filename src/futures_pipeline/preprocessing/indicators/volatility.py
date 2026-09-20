@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from .util import smoothing_average, ttr
 """
 Computes a rolling window standard deviation as a measure of market volatility on recent movements.
 """
@@ -74,3 +75,30 @@ def percent_b(prices: pd.Series, period: int = 20, std: int = 2) -> pd.Series:
         output[positions[:count]] = values
 
     return pd.Series(output, index=prices.index, name="percent_b")
+
+
+# Average True Range
+def atr(data: pd.DataFrame, period: int = 14) -> pd.Series:
+    output: np.ndarray = np.full(data.shape[0], np.nan)
+    for positions in data.groupby("ticker").indices.values():
+        if len(positions) < period:
+            continue
+        current = data.iloc[positions].copy()
+        current['TTR'] = ttr(current)
+        output[positions] = smoothing_average(current['TTR'], alpha=1 / period, period=period, init='sma')
+
+    return pd.Series(output, index=data.index, name='atr')
+
+
+def vr(data: pd.DataFrame):
+    ttr_values: pd.Series = ttr(data).to_numpy()
+    atr_values: pd.Series = atr(data).to_numpy()
+    output = np.full(data.shape[0], np.nan)
+    return np.divide(
+            ttr_values, 
+            atr_values,
+            out=output,
+            where=atr_values > 0
+    )
+def kc():
+    ...

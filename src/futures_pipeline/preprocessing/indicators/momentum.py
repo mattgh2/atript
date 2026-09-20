@@ -64,33 +64,8 @@ def smoothed_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     return pd.Series(output, prices.index, name="rsi")
 
 
-"""
-Calculates VWAP.
 
-@param
-
-@note 
-
-"""
-def vwap(df: pd.DataFrame) -> pd.Series: 
-    data = df.copy()
-
-    data['price'] = (df['high'] + df['low'] + df['close']) / 3
-    data["_position"] = np.arange(data.shape[0])
-
-    data = data.sort_values("real_timestamp", kind='stable')
-
-    def calcuate_vwap(group: pd.DataFrame) -> pd.DataFrame:
-        vwap = (group['price'] * group['volume']).cumsum() / group['volume'].cumsum()
-        group['VWAP'] = vwap
-        return group
-
-    vwap_df: pd.DataFrame = data.groupby(['session_end_date', 'ticker']).apply(calcuate_vwap, include_groups=False) # type:ignore
-
-    vwap = vwap_df.sort_values('_position')['VWAP'].to_numpy()
-    return pd.Series(vwap, index=df.index, name="VWAP")
-
-# Fast stochastic oscillator.
+# Fast stochastic oscillator (Fast %K).
 def fast_k(data: pd.DataFrame, period: int = 14):
     output = np.full(data.shape[0], np.nan)
     for positions in data.groupby('ticker').indices.values():
@@ -103,10 +78,12 @@ def fast_k(data: pd.DataFrame, period: int = 14):
     return pd.Series(output, index=data.index, name="fast_k")
 
 
+# Slow stochastic oscillator (Slow %K).
 def slow_k(fast_k: pd.Series):
     return sma(fast_k, p=3).rename("slow_k")
 
 
+# Rate of Change
 def RoC(prices: pd.Series, period: int = 14):
     output = np.full(len(prices), np.nan)
     for positions in prices.groupby(level=0).indices.values():
@@ -119,3 +96,16 @@ def RoC(prices: pd.Series, period: int = 14):
         output[positions] = roc
 
     return pd.Series(output, index=prices.index, name="RoC")
+
+# Commodity Channel Index
+def cci(data: pd.DataFrame, period: int = 20):
+    output = np.full(data.shape[0], np.nan)
+    for positions in data.groupby('ticker').indices.values():
+        current = data.iloc[np.array(positions)]
+        current["TP"] = (current['high']  + current['low'] + current['close']) / 3
+        current['sma'] = sma(current['TP'], p=period)
+        current['mad'] = current['TP'].iloc[::-1].rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True).iloc[::-1].to_numpy()
+        output[positions] = (current['TP'] - current['sma']) / (0.015 * current['mad'])
+    return pd.Series(output, index=data.index, name="cci")
+
+

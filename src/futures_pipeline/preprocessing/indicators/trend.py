@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from .util import smoothing_average
 
 """
 Computes the p period simple moving average
@@ -68,42 +69,9 @@ def wma(prices: pd.Series, period: int = 14) -> pd.Series:
     return pd.Series(output, index=prices.index, name="wma")
 
 
-"""
-Computes the p period exponential moving average.
 
-@param prices An array of price history.
-@param p Period length.
-
-@note EMA_t = {
-    p_1 if t = 1,
-    \\alpha p_t + (1-\\alpha)EMA_{t-1} o.w
-}
-
-More info can be found in the repos reference doc.
-"""
-def ema(prices: pd.Series, period: int = 15) -> pd.Series:
-    if len(prices) < period or period <= 0:
-        raise ValueError("period must be between 1 and len(prices).")
-
-
-    alpha: float = 2.0 / (period + 1)
-    output = np.full(len(prices), np.nan)
-    for positions in prices.groupby(level=0).indices.values():
-        price = prices.iloc[np.array(positions)]
-
-        if len(price) < period:
-            continue
-
-        n: int = len(price)-1
-        ema = np.full(n+1, np.nan)
-
-        ema[n] = price.iloc[n]
-        for i in range(n-1, -1, -1): 
-            ema[i] = alpha * price.iloc[i] + (1-alpha) * ema[i+1]
-
-        output[positions] = ema
-
-    return pd.Series(output, index=prices.index, name="ema")
+def ema(prices: pd.Series, period: int = 15):
+    return smoothing_average(prices, 2 / (period + 1), period).rename("ema")
 
 
 def t3ma(closes: pd.Series, alpha: float = .7, period: int = 15):

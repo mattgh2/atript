@@ -1,16 +1,14 @@
 import pandas as pd
-from ..datareader import load_prior_data, load_train
+from ..datareader import load_prior_data
 from ..datareader.readerutil import fetch_session_hours, get_product_code
 from pathlib import Path
-from ..config import PROCESSED_DATA_DIR, load_settings
-from ..massive_client import create_massive_client
-from datetime import timedelta
-from dateutil.relativedelta import relativedelta
+from ..config import PROCESSED_DATA_DIR
 from ..typedefs import CandleResolution
 import numpy as np
-from .indicators.momentum import smoothed_rsi, RoC, fast_k, slow_k, vwap
+from .indicators.momentum import smoothed_rsi, RoC, fast_k, slow_k, cci
 from .indicators.trend import ema, dma, sma, t3ma
-from .indicators.volatility import percent_b, rolling_std
+from .indicators.volatility import percent_b, rolling_std, atr, vr
+from .indicators.volume import vwap
 from .preproc_util import get_returns
 
 def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False) -> None:
@@ -71,15 +69,20 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
     data.loc[missing_prev, 'returns'] = np.nan
 
     # Momentum
-    data["rsi"] = smoothed_rsi(data["close"])
-    data["percent_b"] = percent_b(data["close"])
+    data["RSI"] = smoothed_rsi(data["close"])
+    data['FSO'] = fast_k(data)
+    data['SSO'] = slow_k(data['FSO'])
+    data['CCI'] = cci(data)
+    data['ROC'] = RoC(data['close'])
+
+    # Volume.
     data["VWAP"] = vwap(data)
 
     # Trend indicators.
-    data["ema"] = ema(data["close"])
-    data['dma'] = dma(data['close'])
-    data['t3ma'] = t3ma(data['close'])
-    data['sma'] = sma(data['close'])
+    data["EMA"] = ema(data["close"])
+    data['DMA'] = dma(data['close'])
+    data['T3MA'] = t3ma(data['close'])
+    data['SMA'] = sma(data['close'])
 
     # TODO: These need to be grouped by ticker
     # data['close_to_ema'] = data['close'] / data["ema"] - 1
@@ -88,6 +91,9 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
 
     # Volatility.
     data['rolling_std_20'] = rolling_std(data['returns'], 20)
+    data["percent_b"] = percent_b(data["close"])
+    data['ATR'] = atr(data)
+    data['VR'] = vr(data)
 
     # TODO: Group by ticker
     # data['intrabar_range'] = (data['high'] - data['low']) / data['close']

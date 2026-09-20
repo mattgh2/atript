@@ -11,15 +11,13 @@ from .config import load_fees
 
 from autogluon.timeseries import TimeSeriesDataFrame, TimeSeriesPredictor
 
+TREND = ['EMA', 'SMA', 'DMA', 'T3MA']
+MOMENTUM = ["RSI", 'FSO', 'SSO', 'ROC', 'CCI']
+VOLATILITY = ["VR", "ATR", "percent_b"]
+VOLUME = ["volume", "VWAP"]
+TIME = ['has_time_gap', 'log_elapsed_intervals']
+
 def fine_tuned_model(ticker, target, pred_length, quantiles):
-
-    volatility = ['rolling_std_20', "true_range"]
-    trend = ["close_to_ema", "ema_slope"]
-    momentum = ["rsi"]
-    relative_position = ['percent_b', 'close_to_vwap']
-    market_activity = ['volume']
-    time = ['has_time_gap', 'log_elapsed_intervals']
-
     covariates: list = [*volatility, *trend, *momentum, *relative_position, *market_activity, *time]
 
     predictor = TimeSeriesPredictor(
@@ -51,15 +49,7 @@ def run_model(
     if data is None:
         raise RuntimeError("No data.")
 
-    volatility = ['rolling_std_20', "true_range"]
-    trend = ["close_to_ema", "ema_slope"]
-    momentum = ["rsi"]
-    relative_position = ['percent_b', 'close_to_vwap']
-    market_activity = ['volume']
-    time = ['has_time_gap', 'log_elapsed_intervals']
-
-    # covariates: list = [*volatility, *trend, *momentum, *relative_position, *market_activity, *time]
-    covariates: list = []
+    covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME]
 
     context_df = (
         data[["model_timestamp", "ticker", target, *covariates]]
