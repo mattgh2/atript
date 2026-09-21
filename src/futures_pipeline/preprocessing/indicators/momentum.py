@@ -80,7 +80,12 @@ def fast_k(data: pd.DataFrame, period: int = 14):
 
 # Slow stochastic oscillator (Slow %K).
 def slow_k(fast_k: pd.Series):
-    return sma(fast_k, p=3).rename("slow_k")
+    output = np.full(len(fast_k), np.nan)
+    for positions in fast_k.groupby(level=0).indices.values():
+        current = fast_k.iloc[np.array(positions)]
+        slow = current.iloc[::-1].rolling(3, min_periods=3).mean().iloc[::-1]
+        output[positions] = slow
+    return pd.Series(output, index=fast_k.index, name='slow_k')
 
 
 # Rate of Change
@@ -101,7 +106,7 @@ def RoC(prices: pd.Series, period: int = 14):
 def cci(data: pd.DataFrame, period: int = 20):
     output = np.full(data.shape[0], np.nan)
     for positions in data.groupby('ticker').indices.values():
-        current = data.iloc[np.array(positions)]
+        current = data.iloc[np.array(positions)].copy()
         current["TP"] = (current['high']  + current['low'] + current['close']) / 3
         current['sma'] = sma(current['TP'], p=period)
         current['mad'] = current['TP'].iloc[::-1].rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True).iloc[::-1].to_numpy()
