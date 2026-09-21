@@ -94,11 +94,12 @@ def vr(data: pd.DataFrame):
     ttr_values: pd.Series = ttr(data).to_numpy()
     atr_values: pd.Series = atr(data).to_numpy()
     output = np.full(data.shape[0], np.nan)
-    return np.divide(
+    np.divide(
             ttr_values, 
             atr_values,
             out=output,
             where=atr_values > 0
     )
+    return pd.Series(output, index=data.index, name="vr")
 def kc():
     ...
