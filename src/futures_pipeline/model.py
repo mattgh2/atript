@@ -1,15 +1,21 @@
 import pandas as pd  # requires: pip install 'pandas[pyarrow]'
 from pathlib import Path
 from chronos import Chronos2Pipeline
-from .config import PROCESSED_DATA_DIR
+from .config import PROCESSED_DATA_DIR, TRAINING_DATA_DIR
 from .typedefs import EvaluationResult, TradingFees, ContractSpec, Signal, PredictionInterval, BacktestResults
 from .datareader import load_prior_data, fetch_contract_spec
+from .datareader.readerutil import get_product_code
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from .config import load_fees
+import torch
 
-from autogluon.timeseries import TimeSeriesDataFrame, TimeSeriesPredictor
+dtype = (
+        torch.bfloat16
+        if torch.cuda.is_bf16_supported()
+        else torch.float16
+)
 
 TREND = ['EMA', 'SMA', 'DMA', 'T3MA']
 MOMENTUM = ["RSI", 'FSO', 'SSO', 'ROC', 'CCI']
@@ -17,17 +23,33 @@ VOLATILITY = ["VR", "ATR", "percent_b"]
 VOLUME = ["volume", "VWAP"]
 TIME = ['has_time_gap', 'log_elapsed_intervals']
 
-def fine_tuned_model(ticker, target, pred_length, quantiles):
-    covariates: list = [*volatility, *trend, *momentum, *relative_position, *market_activity, *time]
+def build_training_input(train_df, target, covariates: list[str], pred_length) -> list:
+    train = []
+    for ticker, contract_df in train_df.groupby('ticker', sort=False):
 
-    predictor = TimeSeriesPredictor(
-            prediction_length=pred_length,
-            target=target,
-            known_covariates_names=covariates,
-            eval_metric="MASE"
-    ).fit(
-            # train_data  = []
-    )
+        contract_df = contract_df.sort_values("real_timestamp").reset_index(drop=True).dropna(
+            subset=[target]
+        )
+
+        if contract_df.shape[0] < 2  * pred_length:
+            continue
+
+        past_covariates = {
+            column: np.array(values)
+            for column, values in contract_df[[*covariates]].to_dict(orient="list").items()
+        }
+
+        train.append(
+            {
+                "target": contract_df[target].to_numpy(),
+                "past_covariates": past_covariates,
+                # "future_covariates": {} # TODO: load future time covariates
+            }
+        ) 
+    if not train:
+        raise ValueError("No contracts contain enough training observations.")
+
+    return train
 
 def run_model(
     ticker,
@@ -41,21 +63,34 @@ def run_model(
     store_weights: bool = False,
     eval: bool=False
 ) -> None:
-    pipeline = load_chronos(model_dir, store_weights=store_weights, hf_token=hf_token)
 
-    # Load historical target values and past values of covariates
-    data: pd.DataFrame | None = load_prior_data(PROCESSED_DATA_DIR / ticker, ticker)
+    product_code = get_product_code(ticker)
 
-    if data is None:
-        raise RuntimeError("No data.")
+    context_df: pd.DataFrame | None = load_prior_data(
+        PROCESSED_DATA_DIR / ticker, ticker
+    )
+
+    train_df: pd.DataFrame | None = load_prior_data(
+        PROCESSED_DATA_DIR / product_code, product_code
+    )
+
+    if context_df is None:
+        raise RuntimeError("Missing context set.")
+    if train_df is None:
+        raise RuntimeError("Missing training set.")
+
+    train_df = train_df.sort_values(['ticker','real_timestamp'])
 
     covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME]
 
     context_df = (
-        data[["model_timestamp", "ticker", target, *covariates]]
+        context_df[["model_timestamp", "ticker", target, *covariates]]
         .sort_values("model_timestamp")
         .reset_index(drop=True)
     )
+
+    train = build_training_input(train_df, target, covariates, pred_length)
+    pipeline = load_chronos(train, model_dir, store_weights=store_weights, hf_token=hf_token, pred_length=pred_length)
 
     if eval:
         initial_train_size = int(context_df.shape[0] * .80)
@@ -167,25 +202,39 @@ Loads a Chronos model from local storage or Hugging Face.
 
 @returns A ``Chronos2Pipeline``
 """
-def load_chronos(model_dir: Path | None = None, store_weights: bool=False, hf_token: str | None=None) -> Chronos2Pipeline:
+def load_chronos(
+    train,
+    model_dir: Path | None = None,
+    store_weights: bool = False,
+    hf_token: str | None = None,
+    pred_length: int = 24,
+) -> Chronos2Pipeline:
     pipeline: Chronos2Pipeline | None = None
 
-    if model_dir is not None and model_dir.exists():
-        try:
-            pipeline = Chronos2Pipeline.from_pretrained(
-                model_dir, device_map="cuda", local_files_only=True
-            )
-        except (OSError, ValueError) as e:
-            print(f"Error occured while loading chronos-2 from {model_dir}: {str(e)}")
+    # if model_dir is not None and model_dir.exists():
+    #     try:
+    #         pipeline = Chronos2Pipeline.from_pretrained(
+    #             model_dir, device_map="cuda", local_files_only=True
+    #         )
+    #     except (OSError, ValueError) as e:
+    #         print(f"Error occured while loading chronos-2 from {model_dir}: {str(e)}")
 
-    if pipeline is None:
-        pipeline = Chronos2Pipeline.from_pretrained(
-            "amazon/chronos-2", device_map="cuda", token=hf_token
-        )
+    # if pipeline is None:
+    pipeline = Chronos2Pipeline.from_pretrained(
+        "amazon/chronos-2", device_map="cuda", token=hf_token
+    ).fit(
+        inputs=train,
+        prediction_length=pred_length,
+        finetune_mode="full",
+        learning_rate=1e-5,
+        num_steps=1000,
+        batch_size=64,
+        context_length=256,
+    )
 
-    if store_weights:
-        assert model_dir is not None, "model_dir is required when store_weights=True"
-        pipeline.save_pretrained(model_dir)
+    # if store_weights:
+    #     assert model_dir is not None, "model_dir is required when store_weights=True"
+    #     pipeline.save_pretrained(model_dir)
 
     return pipeline
 
@@ -243,6 +292,7 @@ def walk_forward_predict(
         pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, target, quantiles)
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
         pred_df['forecast_origin'] = context_df.iloc[window_len - 1]['model_timestamp']
+        pred_df['origin_close'] = context_df.iloc[window_len - 1]['close']
 
         # Compute each quantiles baseline value for the current context window. (historical quantile)
         for quantile in quantiles:
@@ -291,14 +341,21 @@ def evaluate(
         eval: pd.DataFrame,  target: str, quantiles: list[float], prediction_interval: PredictionInterval
 ) -> EvaluationResult:
 
-    actual = eval[target]
-    predicted = eval["predictions"]
-    error = actual - predicted
+    actual: pd.Series = eval[target]
+    predicted: pd.Series = eval["predictions"]
+    origin_close: pd.Series = eval['origin_close']
+    error = predicted - actual 
+    
+    def directional_accuracy(actual, predicted, origin_close):
+        actual_direction = np.sign(actual - origin_close)
+        predicted_direction = np.sign(predicted - origin_close)
+
+        return (predicted_direction == actual_direction).mean()
 
     by_horizon_pf = eval.groupby("horizon").apply(
             lambda group: pd.Series({
                 "count": len(group),
-                "mae": ( group[target] - group['predictions']
+                "mae": (group[target] - group['predictions']
                 ).abs().mean(),
                 "rmse": np.sqrt(
                     (group[target] - 
@@ -306,18 +363,19 @@ def evaluate(
                     ).pow(2).mean()
                 ),
                 "directional_accuracy": (
-                    np.sign(group[target]) == np.sign(group["predictions"])
-                ).mean()
+                    directional_accuracy(group[target], group['predictions'], group['origin_close'])
+                ),
                 })
             , include_groups=False) # type: ignore
 
     mae: float = error.abs().mean()
     rmse: float = error.pow(2).mean() ** 0.5
 
-    directional_accuracy = (np.sign(predicted) == np.sign(actual)).mean()
+    # Predicting every close as the origin_close.
+    baseline_error: pd.Series = origin_close - actual
+    baseline_mae = baseline_error.abs().mean()
 
-    # Predicting every future return is zero as a baseline for mae.
-    baseline_mae = actual.abs().mean()
+    directional_acc = directional_accuracy(actual, predicted, origin_close)
 
     # Measures how much the model improves upon the baseline.
     mae_skill = 1 - mae / baseline_mae
@@ -387,7 +445,7 @@ def evaluate(
         baseline_mae, 
         mae_skill, 
         rmse, 
-        directional_accuracy, 
+        directional_acc,
         by_horizon_loss_df,
         loss, 
         baseline_loss,
@@ -455,7 +513,6 @@ def backtest_strategy(
             calculate_cost_threshold(price, total_round_trip_cost, contract_spec.multiplier) for price in backtest['origin_close']
     )
 
-
     backtest['signal'] = pd.Series(
             # calcuate_signal_pi(row['threshold'], row[str(pred_interval.lower)], row[str(pred_interval.upper)])
             calculate_signal_point(row['threshold'], row['predictions'])
@@ -464,8 +521,11 @@ def backtest_strategy(
     print(backtest['signal'].value_counts())
     for idx, row in backtest.iterrows():
         # print(f"Threshold: {row['threshold']:.8f}. PI: [{row[str(pred_interval.lower)]}, {row[str(pred_interval.upper)]}]. Signal is {row['signal']}")
-        print(f"Threshold: {row['threshold']:.8f}. Return prediction: {row['predictions']:.8f}. Actual target value: {row['returns']:.8f}. AE: {abs(row['returns'] - row['predictions'])}. Signal is {row['signal']}")
-
+        print(
+            f"Threshold: {row['threshold']:.8f}. Return prediction: {row['predictions']:.8f}. "
+            f"Actual target value: {row['returns']:.8f}. AE: {abs(row['returns'] - row['predictions'])}. "
+            f"Signal is {row['signal']}"
+        )
 
     backtest = backtest.sort_values(["ticker", "forecast_origin"]).reset_index(
         drop=True
@@ -534,5 +594,3 @@ def calculate_signal_point(threshold, forecast):
     else:
         signal = Signal.HOLD
     return signal
-
-
