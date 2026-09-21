@@ -79,10 +79,10 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
     data["VWAP"] = vwap(data)
 
     # Trend indicators.
-    data["EMA"] = ema(data["close"])
-    data['DMA'] = dma(data['close'])
-    data['T3MA'] = t3ma(data['close'])
     data['SMA'] = sma(data['close'])
+    data["EMA"] = ema(data["close"])
+    data['DMA'] = dma(data['SMA'])
+    data['T3MA'] = t3ma(data['close'])
 
     # TODO: These need to be grouped by ticker
     # data['close_to_ema'] = data['close'] / data["ema"] - 1
