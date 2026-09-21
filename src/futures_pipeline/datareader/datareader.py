@@ -218,8 +218,8 @@ def load_prior_data(
     if not data_dir.is_dir():
         return None
 
-    if train:
-        return load_train(symbol, data_dir)
+    # if train:
+    #     return load_train(symbol, data_dir)
 
     if not begin:
         start_date = min(
