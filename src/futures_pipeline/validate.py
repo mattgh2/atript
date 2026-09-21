@@ -113,7 +113,6 @@ class FetchRangeArgs(CommandArgs):
 class ModelArgs(CommandArgs):
     ticker: str = Field(min_length=1)
     pred_length: int = Field(gt=0)
-    target: str = Field(default="returns", min_length=1)
     store_weights: bool = Field(default=False)
     eval: bool = Field(default=False)
     quantiles: list = Field(default_factory=lambda: [0.1,0.5,0.9])

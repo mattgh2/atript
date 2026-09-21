@@ -81,7 +81,6 @@ def main():
             )
             run_model(
                     args.ticker, 
-                    args.target,
                     args.pred_length, 
                     args.quantiles,
                     pred_interval,

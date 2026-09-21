@@ -22,10 +22,9 @@ CONFIG_FILE: Path = PROJECT_ROOT / "config.toml"
 @dataclass(frozen=True)
 class Defaults:
     resolution: str = "15min"
-    target: str = "returns"
     pred_length: int = 24
-    quantiles: list[float] = field(default_factory=lambda: [0.4,0.5,0.6])
-    prediction_interval: tuple[float, float] = (0.4,0.6)
+    quantiles: list[float] = field(default_factory=lambda: [0.1,0.5,0.9])
+    prediction_interval: tuple[float, float] = (0.1,0.9)
 @dataclass
 class Settings:
     massive_api_key: str
