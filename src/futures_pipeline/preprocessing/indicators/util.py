@@ -49,7 +49,7 @@ def smoothing_average(
 def ttr(data: pd.DataFrame) -> pd.Series:
     output = np.full(data.shape[0], np.nan)
     for positions in data.groupby('ticker').indices.values():
-        current = data.iloc[positions]
+        current = data.iloc[positions].copy()
         current['previous_close'] = current['close'].shift(-1)
         tr = current.apply(
             lambda row: max(row["high"], row["previous_close"])
