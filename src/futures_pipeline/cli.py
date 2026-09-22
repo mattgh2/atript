@@ -59,8 +59,8 @@ def create_preprocess_parser(subparsers: _SubParsersAction, common_args: Argumen
 def create_model_parser(subparsers: _SubParsersAction) -> None:
     parser: ArgumentParser = subparsers.add_parser("model", argument_default=SUPPRESS)
     parser.add_argument("--ticker", '-t', type=str)
-    parser.add_argument("--pred_length", "-p", type=int)
-    parser.add_argument("--context_length", "-c", type=int)
+    parser.add_argument("--pred-length", "-p", type=int)
+    parser.add_argument("--context-length", "-c", type=int)
     parser.add_argument("--store_weights", "-s", action="store_true")
     parser.add_argument("--eval", "-e", action="store_true")
 
