@@ -11,13 +11,13 @@ from .indicators.volatility import percent_b, rolling_std, atr, vr
 from .indicators.volume import vwap
 from .preproc_util import get_returns
 
-def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False) -> None:
+def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool) -> None:
     processed_path: Path = Path(PROCESSED_DATA_DIR) / symbol
     processed_path.mkdir(exist_ok=True, parents=True)
 
-    data: pd.DataFrame | None = load_prior_data(data_dir, symbol, train=train)
+    data: pd.DataFrame = load_prior_data(data_dir, symbol, train=train)
 
-    if data is None:
+    if data.empty:
         print(f"No data available for {symbol}.")
         return
 
@@ -123,8 +123,8 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool = False
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
         path: str = f"{processed_path}/{symbol}-{day}.parquet"
-        prior: pd.DataFrame | None = load_prior_data(processed_path, symbol, day, day)
-        if prior is not None:
+        prior: pd.DataFrame = load_prior_data(processed_path, symbol, day, day)
+        if not prior.empty:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
                 subset="real_timestamp"
             )

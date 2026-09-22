@@ -46,9 +46,9 @@ def fetch_context(
     data_dir.mkdir(parents=True, exist_ok=True)
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
-        prior: pd.DataFrame | None = load_prior_data(data_dir, args.symbol, day, day)
+        prior: pd.DataFrame = load_prior_data(data_dir, args.symbol, day, day)
 
-        if prior is not None:
+        if not prior.empty:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
                 subset="window_start"
             )
@@ -60,13 +60,12 @@ def fetch_context(
 
 def fetch_train(massive_client: RESTClient, args: FetchTrainArgs, data_dir: Path):
     data: pd.DataFrame = fetch_training_set(
-        args.contract, args.resolution, massive_client, args.years, args.hold_out
+        args.symbol, args.resolution, massive_client, args.from_date, args.years
     )
     data_dir.mkdir(parents=True, exist_ok=True)
 
     data = validate_data(list(data.to_dict(orient='index').values()))
 
-    # Store
-    data.to_parquet(f"{data_dir}/{args.contract}-train.parquet")
+    data.to_parquet(f"{data_dir}/{args.symbol}-train.parquet")
 
 
