@@ -61,7 +61,8 @@ def create_model_parser(subparsers: _SubParsersAction) -> None:
     parser.add_argument("--ticker", '-t', type=str)
     parser.add_argument("--pred-length", "-p", type=int)
     parser.add_argument("--context-length", "-c", type=int)
-    parser.add_argument("--store_weights", "-s", action="store_true")
+    parser.add_argument("--train", '-T', action="store_true")
+    parser.add_argument("--zero-shot", '-z', action="store_true")
     parser.add_argument("--eval", "-e", action="store_true")
 
 

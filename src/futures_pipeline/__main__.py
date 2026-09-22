@@ -87,8 +87,8 @@ def main():
                     pred_interval,
                     contract_spec,
                     hf_token=hf_token, 
-                    model_dir=MODEL_DIR/args.ticker, 
-                    store_weights=args.store_weights, 
+                    train=args.train,
+                    zero_shot=args.zero_shot,
                     eval=args.eval
             )
 

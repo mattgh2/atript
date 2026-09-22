@@ -1,7 +1,7 @@
 import pandas as pd  # requires: pip install 'pandas[pyarrow]'
 from pathlib import Path
 from chronos import Chronos2Pipeline
-from .config import PROCESSED_DATA_DIR, TRAINING_DATA_DIR
+from .config import PROCESSED_DATA_DIR, TRAINING_DATA_DIR, MODEL_DIR
 from .typedefs import EvaluationResult, TradingFees, ContractSpec, Signal, PredictionInterval, BacktestResults
 from .datareader import load_prior_data, fetch_contract_spec
 from .datareader.readerutil import get_product_code
@@ -19,7 +19,7 @@ VOLATILITY = ["VR", "ATR", "percent_b"]
 VOLUME = ["volume", "VWAP"]
 TIME = ['has_time_gap', 'log_elapsed_intervals']
 
-# TODO: (1) Should each contract have the same number of validation items? 
+# TODO: (1) Should each contract have the same number of validation items?
 #           More items contribute more to loss thus resulting in unequal ticker contributions.
 #       (2) In build_validation_set, reduce context_length if too large. bsearch?
 #       (3) Tune Context length for training (4) Find optimal context length for inference.
@@ -171,34 +171,53 @@ def run_model(
     prediction_interval: PredictionInterval,
     contract_spec: ContractSpec,
     hf_token=None,
-    model_dir=None,
     store_weights: bool = False,
+    train: bool = False,
+    zero_shot: bool = False,
     eval: bool=False
 ) -> None:
 
-    train_df, validate_df = load_and_split_training_set(train_size=.80, ticker=ticker,context_length=context_length)
-    history_df = load_history(ticker)
-
     covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME]
 
+    model_dir: Path | None = None
+
+    if not zero_shot and not train:
+        model_dir = MODEL_DIR / get_product_code(ticker) / "finetuned-ckpt"
+
+    pipeline = load_chronos(
+        model_dir,
+        hf_token=hf_token,
+    )
+
+    if train:
+        train_df, validate_df = load_and_split_training_set(
+            train_size=0.80, ticker=ticker, context_length=context_length
+        )
+
+        # Build model inputs.
+        training_input = build_training_input(train_df, covariates, pred_length)
+        validation_input = build_validation_input(validate_df, covariates, pred_length, context_length)
+        pipeline = finetune_chronos(
+                pipeline=pipeline,
+                train=training_input,
+                validation=validation_input,
+                pred_length=pred_length,
+                context_length=context_length,
+                finetune_mode="lora",
+                learning_rate=1e-5,
+                num_steps=1000,
+                batch_size=32,
+                callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+                eval_steps=100,
+                save_steps=100,
+                store_weights=store_weights
+        )
+
+    history_df = load_history(ticker)
     context_df = (
         history_df[["model_timestamp", "ticker", "close", *covariates]]
         .sort_values("model_timestamp")
         .reset_index(drop=True)
-    )
-
-    # Build model inputs.
-    train = build_training_input(train_df, covariates, pred_length)
-    validate = build_validation_input(validate_df, covariates, pred_length, context_length)
-
-    pipeline = load_chronos(
-        train,
-        validate,
-        model_dir,
-        store_weights=store_weights,
-        hf_token=hf_token,
-        pred_length=pred_length,
-        context_length=context_length,
     )
 
     if eval:
@@ -297,7 +316,7 @@ def predict_chronos(
     pred_df = pipeline.predict_df(
         context_df,
         prediction_length=pred_length,  # Number of steps to forecast
-        # context_length=context_length,
+        context_length=context_length,
         quantile_levels=quantiles,  # Quantile for probabilistic forecast
         id_column="ticker",  # Column identifying different time series
         timestamp_column="model_timestamp",  # Column with datetime information
@@ -316,52 +335,62 @@ Loads a Chronos model from local storage or Hugging Face.
 @returns A ``Chronos2Pipeline``
 """
 def load_chronos(
-    train,
-    validation,
-    model_dir: Path | None = None,
-    store_weights: bool = False,
+    model_dir: Path | None,
     hf_token: str | None = None,
-    pred_length: int = 24,
-    context_length: int = 256
 ) -> Chronos2Pipeline:
-    pipeline: Chronos2Pipeline | None = None
-
-    # if model_dir is not None and model_dir.exists():
-    #     try:
-    #         pipeline = Chronos2Pipeline.from_pretrained(
-    #             model_dir, device_map="cuda", local_files_only=True
-    #         )
-    #     except (OSError, ValueError) as e:
-    #         print(f"Error occured while loading chronos-2 from {model_dir}: {str(e)}")
-
-    # if pipeline is None:
-    pipeline = Chronos2Pipeline.from_pretrained(
-        "amazon/chronos-2", device_map="cuda", token=hf_token
-    ).fit(
-        inputs=train,
-        validation_inputs=validation,
-        prediction_length=pred_length,
-        finetune_mode="full",
-        learning_rate=1e-6,
-        output_dir=model_dir,
-        num_steps=1000,
-        batch_size=64,
-        context_length=256,
-        callbacks=[
-            EarlyStoppingCallback(
-                early_stopping_patience=3,
-                early_stopping_threshold=0.0,
+    if model_dir and model_dir.exists():
+        try: 
+            pipeline = Chronos2Pipeline.from_pretrained(
+                model_dir, device_map="cuda", local_files_only=True
             )
-        ],
-        eval_steps=100,
-        save_steps=100
+        except OSError as e:
+            raise ValueError(f"Failed to load model from {model_dir}.") from e
+
+    pipeline = Chronos2Pipeline.from_pretrained(
+            "amazon/chronos-2", device_map="cuda", token=hf_token
     )
 
-    # if store_weights:
-    #     assert model_dir is not None, "model_dir is required when store_weights=True"
-    #     pipeline.save_pretrained(model_dir)
+    return pipeline
+
+
+def finetune_chronos(
+    pipeline: Chronos2Pipeline,
+    train,
+    validation,
+    pred_length: int ,
+    context_length: int,
+    finetune_mode: str,
+    learning_rate: float,
+    num_steps: int,
+    batch_size: int,
+    callbacks: list,
+    eval_steps: int,
+    save_steps: int,
+    model_dir: Path | None = None,
+    store_weights: bool = False,
+):
+    fine_tuning_params = {
+            "inputs": train,
+            "validation": validation,
+            "pred_length": pred_length,
+            "context_length": context_length,
+            "learning_rate": learning_rate,
+            "num_steps": num_steps,
+            "batch_size": batch_size,
+            "finetune_mode": finetune_mode,
+            "callbacks": callbacks,
+            "eval_steps": eval_steps,
+            "save_steps": save_steps
+    }
+
+    if store_weights:
+        assert model_dir is not None, "model_dir is required when store_weights=True"
+        fine_tuning_params['output_dir'] = model_dir
+
+    pipeline.fit(**fine_tuning_params)
 
     return pipeline
+
 
 """
 Computes the element-wise pinball loss for a quantile forecast.
