@@ -9,7 +9,6 @@ from pathlib import Path
 from dateutil.relativedelta import relativedelta
 from ..config import RAW_DATA_DIR
 from typing import cast, Hashable
-import re
 from collections import defaultdict
 from ..typedefs import CandleResolution
 from enum import IntEnum
@@ -38,6 +37,8 @@ def fetch_data(
     try:
         first = next(data)
     except StopIteration:
+        from pprint import pprint
+        pprint(fetch_parameters)
         print("No data Returned")
         return
     yield first
@@ -84,8 +85,8 @@ def fetch_training_set(
     contract: str,
     resolution: str,
     massive_client: RESTClient,
+    from_date: date,
     num_years: int = 1,
-    hold_out_months: int = 3,
 ) -> pd.DataFrame:
     leading_months: dict[int, tuple[int,str]] = {
             1: (3, "H"), 2: (3,"H"), 3: (3,"H"),
@@ -95,29 +96,29 @@ def fetch_training_set(
     }
 
     # Get the current year, current month.
-    current_session_end = date.today() - relativedelta(months=hold_out_months)
-    end_date = current_session_end - relativedelta(years=num_years)
+    session_end: date = from_date
+    end_date = session_end - relativedelta(years=num_years)
 
     grouped_dates: defaultdict[str, list[date]] = defaultdict(list)
     # expirations: dict[str, date] = {}
 
-    current = current_session_end
+    current = session_end
 
     # Group dates by leading contract
     while current >= end_date:
         # Get the leading ticker for this date.
-        current_year = current.year
+        year = current.year
         expr_month, month_code =  leading_months[current.month]
         ticker = ''.join((contract, month_code, str(current.year % 10)))
 
-        if current >= mes_roll_date(current_year, expr_month):
+        if current >= mes_roll_date(year, expr_month):
             if expr_month == 12:
                 month_code = 'H'
-                current_year += 1
+                year += 1
             else:
                 _, month_code = leading_months[expr_month + 1]
 
-        ticker = "".join((contract, month_code, str(current_year % 10)))
+        ticker = "".join((contract, month_code, str(year % 10)))
 
         grouped_dates[ticker].append(current)
         current -= timedelta(days=1)
@@ -128,7 +129,7 @@ def fetch_training_set(
 
     print(
         f"Collecting {num_years} year(s) worth of data. "
-        f"Starting at {current_session_end}, ending at {end_date}."
+        f"Starting at {session_end}, ending at {end_date}."
     )
 
     data = []
@@ -155,7 +156,7 @@ def fetch_training_set(
 
     # NOTE: Only supports resolutions [min, hour, sec]
     session_dates: dict[Hashable, list[pd.Timestamp]] = fetch_session_dates(
-        contract, massive_client, end_date.isoformat(), current_session_end.isoformat()
+        contract, massive_client, end_date.isoformat(), session_end.isoformat()
     )
 
     res: CandleResolution = CandleResolution(resolution)
@@ -213,13 +214,13 @@ def load_train(symbol: str, data_dir: Path):
 
 def load_prior_data(
     data_dir: Path, symbol: str, begin: str = "", end: str = "", train: bool = False
-) -> pd.DataFrame | None:
+) -> pd.DataFrame:
 
     if not data_dir.is_dir():
-        return None
+        return pd.DataFrame()
 
-    # if train:
-    #     return load_train(symbol, data_dir)
+    if train:
+        return load_train(symbol, data_dir)
 
     if not begin:
         start_date = min(
@@ -244,8 +245,9 @@ def load_prior_data(
         <= date.fromisoformat(f.stem.removeprefix(f"{symbol}-"))
         <= end_date
     ]
+
     if not files:
-        return None
+        return pd.DataFrame()
 
     return pd.concat([pd.read_parquet(file) for file in files], ignore_index=True)
 
