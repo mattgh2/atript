@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import date
+from datetime import date, time
 import re
 from typing import Literal
 from pydantic import (
@@ -13,6 +13,7 @@ from pydantic import (
 from typing import Self, Iterable
 from massive.rest.futures import FuturesAgg
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 class FuturesOHLC(BaseModel):
@@ -25,7 +26,7 @@ class FuturesOHLC(BaseModel):
     close: float = Field(allow_inf_nan=False)
     volume: int = Field(ge=0)
     transactions: int = Field(ge=0)
-    window_start: datetime
+    window_start: datetime 
     session_end_date: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -85,16 +86,13 @@ class FetchLatestArgs(CommandArgs):
     symbol: str = Field(min_length=1)
 
 class FetchTrainArgs(CommandArgs):
-    contract: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
     years: int = Field(gt=0)
-    hold_out: int = Field(gt=0)
+    from_date: date
 
     @model_validator(mode="after")
     def validate_train(self) -> Self:
-        if self.years * 12 <= self.hold_out:
-            raise ValueError("hold_out must be less than years.")
-
-        self.contract = self.contract.upper()
+        self.symbol = self.symbol.upper()
         return self
 
 
@@ -113,6 +111,7 @@ class FetchRangeArgs(CommandArgs):
 class ModelArgs(CommandArgs):
     ticker: str = Field(min_length=1)
     pred_length: int = Field(gt=0)
+    context_length: int = Field(gt=0)
     store_weights: bool = Field(default=False)
     eval: bool = Field(default=False)
     quantiles: list = Field(default_factory=lambda: [0.1,0.5,0.9])
