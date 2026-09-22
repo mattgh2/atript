@@ -43,7 +43,7 @@ def create_fetch_parser(subparsers: _SubParsersAction, common_args: ArgumentPars
     train_parser: ArgumentParser = fetch_subparsers.add_parser("train", parents=[common_args], argument_default=SUPPRESS)
     train_parser.add_argument('--years', '-y', type=int, help="Number of years to from the current year to collect.")
     train_parser.add_argument('--contract', '-c', type=str)
-    train_parser.add_argument('--hold-out', '-H', help="Number of months to hold out for model context.")
+    train_parser.add_argument('--from-date', '-f', help="date to start collection on.")
     
     return fetch_parser
 
@@ -60,6 +60,7 @@ def create_model_parser(subparsers: _SubParsersAction) -> None:
     parser: ArgumentParser = subparsers.add_parser("model", argument_default=SUPPRESS)
     parser.add_argument("--ticker", '-t', type=str)
     parser.add_argument("--pred_length", "-p", type=int)
+    parser.add_argument("--context_length", "-c", type=int)
     parser.add_argument("--store_weights", "-s", action="store_true")
     parser.add_argument("--eval", "-e", action="store_true")
 
