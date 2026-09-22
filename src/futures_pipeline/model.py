@@ -9,13 +9,9 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from .config import load_fees
-import torch
-
-dtype = (
-        torch.bfloat16
-        if torch.cuda.is_bf16_supported()
-        else torch.float16
-)
+from datetime import timedelta
+from transformers import EarlyStoppingCallback
+from typing import NamedTuple
 
 TREND = ['EMA', 'SMA', 'DMA', 'T3MA']
 MOMENTUM = ["RSI", 'FSO', 'SSO', 'ROC', 'CCI']
@@ -23,14 +19,87 @@ VOLATILITY = ["VR", "ATR", "percent_b"]
 VOLUME = ["volume", "VWAP"]
 TIME = ['has_time_gap', 'log_elapsed_intervals']
 
+# TODO: (1) Should each contract have the same number of validation items? 
+#           More items contribute more to loss thus resulting in unequal ticker contributions.
+#       (2) In build_validation_set, reduce context_length if too large. bsearch?
+#       (3) Tune Context length for training
+#       (4) Find optimal context length for inference.
+#       (5)
+
+
+class TrainValidate(NamedTuple):
+    train: pd.DataFrame
+    validate: pd.DataFrame
+
+def load_and_split_training_set(train_size: float, ticker, context_length) -> TrainValidate:
+
+    if not 0 < train_size <= 1:
+        raise ValueError("train_size must be in the range (0, 1).")
+
+    product_code = get_product_code(ticker)
+    train_df: pd.DataFrame = load_prior_data(
+        PROCESSED_DATA_DIR / product_code, product_code
+    )
+
+    if train_df.empty:
+        raise RuntimeError("Missing training set.")
+
+    train_df = train_df.sort_values(['ticker','real_timestamp'])
+    
+    train_df['session_end_date'] = pd.to_datetime(train_df['session_end_date'])
+
+    first_date, last_date = train_df['session_end_date'].agg(['min','max'])
+    num_days: timedelta = last_date - first_date
+
+    # Number of days to use a validation targets.
+    validation_days: int = (num_days * (1-train_size)).days
+    validation_cut_off_date = last_date - timedelta(days=validation_days)
+
+    validation_df: pd.DataFrame = train_df[train_df['session_end_date'] >= validation_cut_off_date]
+    train_df = train_df[train_df['session_end_date'] < validation_cut_off_date].reset_index(drop=True)
+
+    # Validation DataFrame should include observations before the validation cutoff 
+    #       So the first context_length validation rows can be used as validation targets.
+    val_tickers = validation_df['ticker'].unique()
+
+    validation_context = (
+            train_df[train_df['ticker'].isin(val_tickers)]
+            .sort_values(['ticker','real_timestamp'])
+            .groupby('ticker', group_keys=False)
+            .tail(context_length)
+
+    )
+
+    validation_df = pd.concat(
+            [validation_context, validation_df],
+            ignore_index=True
+    ).reset_index(drop=True)
+
+    return TrainValidate(train_df, validation_df)
+
+
+def load_history(ticker: str) -> pd.DataFrame:
+    history_df: pd.DataFrame = load_prior_data(
+        PROCESSED_DATA_DIR / ticker, ticker
+    )
+    if history_df.empty:
+        raise RuntimeError("Missing context set.")
+
+    return history_df
+
+
 def build_training_input(train_df, covariates: list[str], pred_length) -> list:
     train = []
+
+    # Contruct one training item per ticker.
     for ticker, contract_df in train_df.groupby('ticker', sort=False):
 
+        # Ensure sorted by ascending timestamp and drop examples with missing labels.
         contract_df = contract_df.sort_values("real_timestamp").reset_index(drop=True).dropna(
             subset=['close']
         )
 
+        # Needs at least pred_length historical examples.
         if contract_df.shape[0] < 2  * pred_length:
             continue
 
@@ -46,14 +115,61 @@ def build_training_input(train_df, covariates: list[str], pred_length) -> list:
                 # "future_covariates": {} # TODO: load future time covariates
             }
         ) 
+
     if not train:
         raise ValueError("No contracts contain enough training observations.")
 
     return train
 
+
+def build_validation_input(
+    val_df: pd.DataFrame, 
+    covariates: list[str], 
+    pred_length: int, 
+    context_length: int
+) -> list:
+    val = []
+
+    """ Note: A validation item results in a single forecast window. 
+              Need to futher split each item into multiple validation windows."""
+    for ticker, contract_df in val_df.groupby('ticker', sort=False):
+
+        # Ensure sorted by ascending timestamp and drop examples with missing labels.
+        contract_df = contract_df.sort_values("real_timestamp").reset_index(drop=True).dropna(
+            subset=['close']
+        )
+
+        # Min amount of examples for validation.
+        if contract_df.shape[0] < context_length + pred_length:
+            continue
+
+        # Overlap historical context with nonoverlapping prediction windows. 
+        # Start at the end to prioritize the most recent data.
+        forecast_origins = np.arange(len(contract_df) - pred_length, context_length - 1, -pred_length)[::-1]
+
+        for origin in forecast_origins:
+            window = contract_df.iloc[origin - context_length: origin + pred_length]
+            past_covariates = {
+                column: np.array(values)
+                for column, values in window[[*covariates]].to_dict(orient="list").items()
+            }
+            val.append(
+                {
+                    "target": window['close'].to_numpy(),
+                    "past_covariates": past_covariates,
+                    # "future_covariates": {} # TODO: load future time covariates
+                }
+            ) 
+    if not val:
+        raise ValueError("No contracts contain enough validation observations.")
+
+    return val
+
+
 def run_model(
     ticker,
     pred_length,
+    context_length,
     quantiles,
     prediction_interval: PredictionInterval,
     contract_spec: ContractSpec,
@@ -63,22 +179,8 @@ def run_model(
     eval: bool=False
 ) -> None:
 
-    product_code = get_product_code(ticker)
-
-    history_df: pd.DataFrame | None = load_prior_data(
-        PROCESSED_DATA_DIR / ticker, ticker
-    )
-
-    train_df: pd.DataFrame | None = load_prior_data(
-        PROCESSED_DATA_DIR / product_code, product_code
-    )
-
-    if history_df is None:
-        raise RuntimeError("Missing context set.")
-    if train_df is None:
-        raise RuntimeError("Missing training set.")
-
-    train_df = train_df.sort_values(['ticker','real_timestamp'])
+    train_df, validate_df = load_and_split_training_set(train_size=.80, ticker=ticker,context_length=context_length)
+    history_df = load_history(ticker)
 
     covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME]
 
@@ -88,12 +190,23 @@ def run_model(
         .reset_index(drop=True)
     )
 
+    # Build model inputs.
     train = build_training_input(train_df, covariates, pred_length)
-    pipeline = load_chronos(train, model_dir, store_weights=store_weights, hf_token=hf_token, pred_length=pred_length)
+    validate = build_validation_input(validate_df, covariates, pred_length, context_length)
+
+    pipeline = load_chronos(
+        train,
+        validate,
+        model_dir,
+        store_weights=store_weights,
+        hf_token=hf_token,
+        pred_length=pred_length,
+        context_length=context_length,
+    )
 
     if eval:
         initial_train_size = int(context_df.shape[0] * .80)
-        e = walk_forward_predict(pipeline, context_df, pred_length, pred_length,initial_train_size, quantiles)
+        e = walk_forward_predict(pipeline, context_df, pred_length, pred_length, context_length, initial_train_size, quantiles)
         eval_results: EvaluationResult = evaluate(e, quantiles, prediction_interval)
 
         print(f"=== POINT FORECAST METRICS ===")
@@ -104,23 +217,26 @@ def run_model(
         print(f"RMSE: {eval_results.rmse:.8f}")
         print(f"Directional accuracy: {eval_results.directional_accuracy:.8f}\n")
 
-        loss_skill = {
-                q: 1 - eval_results.loss[q] / eval_results.baseline_loss[q]
-                if eval_results.baseline_loss[q] != 0 else np.nan
-                for q in quantiles
-        }
+        # loss_skill = {
+        #         q: 1 - eval_results.loss[q] / eval_results.baseline_loss[q]
+        #         if eval_results.baseline_loss[q] != 0 else np.nan
+        #         for q in quantiles
+        # }
 
         print(f"=== QUANTILE LOSS ===")
         print(eval_results.by_horizon_loss.to_string())
-        for t in zip(
-            eval_results.loss.items(),
-            eval_results.baseline_loss.items(),
-            loss_skill.items(),
-        ):
-            (quantile, avg_loss), (_, baseline_loss), (_, loss_skill) = t
+        # for t in zip(
+        #     eval_results.loss.items(),
+        #     eval_results.baseline_loss.items(),
+        #     loss_skill.items(),
+        # ):
+        #     (quantile, avg_loss), (_, baseline_loss), (_, loss_skill) = t
+        #     print(f"avg loss for {quantile:.2%}th quantile: {avg_loss:.10f}")
+        #     print(f"avg baseline loss for {quantile:.2%}th quantile: {baseline_loss:.10f}")
+        #     print(f"loss skill for {quantile:.2%}th quantile: {loss_skill:.2%}\n")
+
+        for quantile, avg_loss in eval_results.loss.items():
             print(f"avg loss for {quantile:.2%}th quantile: {avg_loss:.10f}")
-            print(f"avg baseline loss for {quantile:.2%}th quantile: {baseline_loss:.10f}")
-            print(f"loss skill for {quantile:.2%}th quantile: {loss_skill:.2%}\n")
 
         print(f" === Quantile Calibration === ")
         for q, v in eval_results.quantile_calibration.items():
@@ -143,6 +259,7 @@ def run_model(
             context_df,
             1,
             1,
+            context_length,
             int(context_df.shape[0] * 0.98),
             quantiles,
         )
@@ -175,6 +292,7 @@ def predict_chronos(
     pipeline: Chronos2Pipeline,
     context_df: pd.DataFrame,
     pred_length: int,
+    context_length: int,
     quantiles,
 ) -> pd.DataFrame:
 
@@ -182,6 +300,7 @@ def predict_chronos(
     pred_df = pipeline.predict_df(
         context_df,
         prediction_length=pred_length,  # Number of steps to forecast
+        context_length=context_length,
         quantile_levels=quantiles,  # Quantile for probabilistic forecast
         id_column="ticker",  # Column identifying different time series
         timestamp_column="model_timestamp",  # Column with datetime information
@@ -201,10 +320,12 @@ Loads a Chronos model from local storage or Hugging Face.
 """
 def load_chronos(
     train,
+    validation,
     model_dir: Path | None = None,
     store_weights: bool = False,
     hf_token: str | None = None,
     pred_length: int = 24,
+    context_length: int = 256
 ) -> Chronos2Pipeline:
     pipeline: Chronos2Pipeline | None = None
 
@@ -221,12 +342,22 @@ def load_chronos(
         "amazon/chronos-2", device_map="cuda", token=hf_token
     ).fit(
         inputs=train,
+        validation_inputs=validation,
         prediction_length=pred_length,
         finetune_mode="full",
         learning_rate=1e-6,
+        output_dir=model_dir,
         num_steps=1000,
         batch_size=64,
-        context_length=256,
+        context_length=context_length,
+        callbacks=[
+            EarlyStoppingCallback(
+                early_stopping_patience=3,
+                early_stopping_threshold=0.0,
+            )
+        ],
+        eval_steps=100,
+        save_steps=100
     )
 
     # if store_weights:
@@ -278,6 +409,7 @@ def walk_forward_predict(
     context_df: pd.DataFrame,
     step: int,
     horizon: int,
+    context_length: int,
     initial_train_size: int,
     quantiles: list[float],
 ) -> pd.DataFrame:
@@ -285,7 +417,7 @@ def walk_forward_predict(
     last = context_df.shape[0] - horizon
     for window_len in range(initial_train_size, last + 1, step):
         print(f"{window_len}/{last}")
-        pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, quantiles)
+        pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, context_length, quantiles)
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
         pred_df['forecast_origin'] = context_df.iloc[window_len - 1]['model_timestamp']
         pred_df['origin_close'] = context_df.iloc[window_len - 1]['close']
