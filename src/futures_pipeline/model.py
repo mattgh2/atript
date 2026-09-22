@@ -22,10 +22,8 @@ TIME = ['has_time_gap', 'log_elapsed_intervals']
 # TODO: (1) Should each contract have the same number of validation items? 
 #           More items contribute more to loss thus resulting in unequal ticker contributions.
 #       (2) In build_validation_set, reduce context_length if too large. bsearch?
-#       (3) Tune Context length for training
-#       (4) Find optimal context length for inference.
+#       (3) Tune Context length for training (4) Find optimal context length for inference.
 #       (5)
-
 
 class TrainValidate(NamedTuple):
     train: pd.DataFrame
@@ -67,7 +65,6 @@ def load_and_split_training_set(train_size: float, ticker, context_length) -> Tr
             .sort_values(['ticker','real_timestamp'])
             .groupby('ticker', group_keys=False)
             .tail(context_length)
-
     )
 
     validation_df = pd.concat(
@@ -100,7 +97,7 @@ def build_training_input(train_df, covariates: list[str], pred_length) -> list:
         )
 
         # Needs at least pred_length historical examples.
-        if contract_df.shape[0] < 2  * pred_length:
+        if contract_df.shape[0] < 2 * pred_length:
             continue
 
         past_covariates = {
@@ -300,7 +297,7 @@ def predict_chronos(
     pred_df = pipeline.predict_df(
         context_df,
         prediction_length=pred_length,  # Number of steps to forecast
-        context_length=context_length,
+        # context_length=context_length,
         quantile_levels=quantiles,  # Quantile for probabilistic forecast
         id_column="ticker",  # Column identifying different time series
         timestamp_column="model_timestamp",  # Column with datetime information
@@ -349,7 +346,7 @@ def load_chronos(
         output_dir=model_dir,
         num_steps=1000,
         batch_size=64,
-        context_length=context_length,
+        context_length=256,
         callbacks=[
             EarlyStoppingCallback(
                 early_stopping_patience=3,
@@ -626,9 +623,11 @@ def backtest_strategy(
     forecasts = forecasts.sort_values(["ticker", "forecast_origin"]).reset_index(
         drop=True
     )
+
     outcomes = market_data[['ticker', 'model_timestamp', 'open', 'close']].rename(
             columns={"open": "entry_price", "close": "exit_price"}
     )
+
     forecasts = forecasts.merge(
             outcomes,
             on=['ticker', 'model_timestamp'],
@@ -682,7 +681,6 @@ def backtest_strategy(
     return BacktestResults(
         trade_count, net_pnl, win_rate, average_pnl, gross_profit, gross_loss
     )
-
 
 """
 Calculates a cost threshold expressed as a proportion of the
