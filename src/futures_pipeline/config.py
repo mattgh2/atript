@@ -23,6 +23,7 @@ CONFIG_FILE: Path = PROJECT_ROOT / "config.toml"
 class Defaults:
     resolution: str = "15min"
     pred_length: int = 24
+    context_length: int = 256
     quantiles: list[float] = field(default_factory=lambda: [0.1,0.5,0.9])
     prediction_interval: tuple[float, float] = (0.1,0.9)
 @dataclass
