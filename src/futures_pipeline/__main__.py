@@ -59,7 +59,7 @@ def main():
             fetch_train(
                     create_massive_client(settings.massive_api_key),
                     args,
-                    TRAINING_DATA_DIR / args.contract
+                    TRAINING_DATA_DIR / args.symbol
             )
 
         case PreprocessArgs():
@@ -81,7 +81,8 @@ def main():
             )
             run_model(
                     args.ticker, 
-                    args.pred_length, 
+                    args.pred_length,
+                    args.context_length,
                     args.quantiles,
                     pred_interval,
                     contract_spec,
