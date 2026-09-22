@@ -12,6 +12,7 @@ from .config import load_fees
 from datetime import timedelta
 from transformers import EarlyStoppingCallback
 from typing import NamedTuple
+from tqdm import tqdm
 
 TREND = ['EMA', 'SMA', 'DMA', 'T3MA']
 MOMENTUM = ["RSI", 'FSO', 'SSO', 'ROC', 'CCI']
@@ -206,7 +207,7 @@ def run_model(
                 finetune_mode="lora",
                 learning_rate=1e-5,
                 num_steps=1000,
-                batch_size=32,
+                batch_size=16,
                 callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
                 eval_steps=100,
                 save_steps=100,
@@ -371,8 +372,8 @@ def finetune_chronos(
 ):
     fine_tuning_params = {
             "inputs": train,
-            "validation": validation,
-            "pred_length": pred_length,
+            "validation_inputs": validation,
+            "prediction_length": pred_length,
             "context_length": context_length,
             "learning_rate": learning_rate,
             "num_steps": num_steps,
@@ -441,8 +442,7 @@ def walk_forward_predict(
 ) -> pd.DataFrame:
     results: list[pd.DataFrame] = []
     last = context_df.shape[0] - horizon
-    for window_len in range(initial_train_size, last + 1, step):
-        print(f"{window_len}/{last}")
+    for window_len in tqdm(range(initial_train_size, last + 1, step)):
         pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, context_length, quantiles)
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
         pred_df['forecast_origin'] = context_df.iloc[window_len - 1]['model_timestamp']
