@@ -73,7 +73,6 @@ def wma(prices: pd.Series, period: int = 14) -> pd.Series:
 def ema(prices: pd.Series, period: int = 15):
     return smoothing_average(prices, 2 / (period + 1), period).rename("ema")
 
-
 def t3ma(closes: pd.Series, alpha: float = .7, period: int = 15):
     output: np.ndarray = np.full(len(closes), np.nan)
     c1 = -alpha ** 3

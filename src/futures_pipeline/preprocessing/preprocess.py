@@ -7,7 +7,7 @@ from ..typedefs import CandleResolution
 import numpy as np
 from .indicators.momentum import smoothed_rsi, RoC, fast_k, slow_k, cci
 from .indicators.trend import ema, dma, sma, t3ma
-from .indicators.volatility import percent_b, rolling_std, atr, vr
+from .indicators.volatility import bollinger_bands, rolling_std, atr, vr, kc
 from .indicators.volume import vwap
 from .preproc_util import get_returns
 
@@ -90,8 +90,15 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool) -> Non
     # data['ema_slope_4'] = data['ema'] / data['ema'].shift(-4) - 1
 
     # Volatility.
+    bb = bollinger_bands(data['close'])
+    keltner = kc(data)
     data['rolling_std_20'] = rolling_std(data['returns'], 20)
-    data["percent_b"] = percent_b(data["close"])
+    data["percent_b"] = bb.percent_b
+    data["upper_b"] = bb.upper_band
+    data["lower_b"] = bb.lower_band
+    data['lower_kc'] = keltner.lower_band
+    data['upper_kc'] = keltner.upper_band
+    data['bollinger_squeeze'] = keltner.bollinger_squeeze
     data['ATR'] = atr(data)
     data['VR'] = vr(data)
 

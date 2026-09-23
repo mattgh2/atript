@@ -20,6 +20,17 @@ VOLATILITY = ["VR", "ATR", "percent_b"]
 VOLUME = ["volume", "VWAP"]
 TIME = ['has_time_gap', 'log_elapsed_intervals']
 
+# VOLATILITY = [
+#     "VR",
+#     "ATR",
+#     "percent_b",
+#     "upper_b",
+#     "lower_b",
+#     "upper_kc",
+#     "lower_kc",
+#     "bollinger_squeeze",
+# ]
+
 # TODO: (1) Should each contract have the same number of validation items?
 #           More items contribute more to loss thus resulting in unequal ticker contributions.
 #       (2) In build_validation_set, reduce context_length if too large. bsearch?
