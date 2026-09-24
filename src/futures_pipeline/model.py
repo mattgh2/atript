@@ -13,6 +13,7 @@ from datetime import timedelta
 from transformers import EarlyStoppingCallback
 from typing import NamedTuple
 from tqdm import tqdm
+from .figs import plot_predictions
 
 TREND = ['EMA', 'SMA', 'DMA', 'T3MA']
 MOMENTUM = ["RSI", 'FSO', 'SSO', 'ROC', 'CCI']
@@ -35,20 +36,24 @@ TIME = ['has_time_gap', 'log_elapsed_intervals']
 #           More items contribute more to loss thus resulting in unequal ticker contributions.
 #       (2) In build_validation_set, reduce context_length if too large. bsearch?
 #       (3) Tune Context length for training (4) Find optimal context length for inference.
-#       (5)
+#       (5) For evaluation, use the remainder of len(context) - context_length. If context_length is very small
+#           e.g. context_lenth = 256, then this may not be reasonable.
 
 class TrainValidate(NamedTuple):
     train: pd.DataFrame
     validate: pd.DataFrame
 
-def load_and_split_training_set(train_size: float, ticker, context_length) -> TrainValidate:
+def load_and_split_training_set(train_size: float, symbol, resolution, context_length) -> TrainValidate:
 
     if not 0 < train_size <= 1:
         raise ValueError("train_size must be in the range (0, 1).")
 
-    product_code = get_product_code(ticker)
+    product_code = get_product_code(symbol)
+
     train_df: pd.DataFrame = load_prior_data(
-        PROCESSED_DATA_DIR / product_code, product_code
+        symbol=product_code, 
+        resolution=resolution,
+        train=True
     )
 
     if train_df.empty:
@@ -87,9 +92,11 @@ def load_and_split_training_set(train_size: float, ticker, context_length) -> Tr
     return TrainValidate(train_df, validation_df)
 
 
-def load_history(ticker: str) -> pd.DataFrame:
+def load_history(ticker: str, resolution: str) -> pd.DataFrame:
     history_df: pd.DataFrame = load_prior_data(
-        PROCESSED_DATA_DIR / ticker, ticker
+        ticker, 
+        resolution,
+        data_dir=PROCESSED_DATA_DIR / f"{ticker}-{resolution}", 
     )
     if history_df.empty:
         raise RuntimeError("Missing context set.")
@@ -177,13 +184,14 @@ def build_validation_input(
 
 def run_model(
     ticker,
+    resolution,
     pred_length,
     context_length,
     quantiles,
     prediction_interval: PredictionInterval,
     contract_spec: ContractSpec,
+    store_weights: bool,
     hf_token=None,
-    store_weights: bool = False,
     train: bool = False,
     zero_shot: bool = False,
     eval: bool=False
@@ -193,8 +201,13 @@ def run_model(
 
     model_dir: Path | None = None
 
-    if not zero_shot and not train:
-        model_dir = MODEL_DIR / get_product_code(ticker) / "finetuned-ckpt"
+    # Get the trained model directory.
+    if not zero_shot:
+        model_dir = MODEL_DIR / f"{get_product_code(ticker)}-{resolution}"
+
+    # Append the location of the model checkpoint.
+    if not train and model_dir is not None:
+        model_dir /= "finetune-ckpt"
 
     pipeline = load_chronos(
         model_dir,
@@ -203,29 +216,31 @@ def run_model(
 
     if train:
         train_df, validate_df = load_and_split_training_set(
-            train_size=0.80, ticker=ticker, context_length=context_length
+            train_size=0.80, symbol=ticker, resolution=resolution, context_length=context_length
         )
 
         # Build model inputs.
         training_input = build_training_input(train_df, covariates, pred_length)
         validation_input = build_validation_input(validate_df, covariates, pred_length, context_length)
+
         pipeline = finetune_chronos(
                 pipeline=pipeline,
                 train=training_input,
                 validation=validation_input,
                 pred_length=pred_length,
                 context_length=context_length,
-                finetune_mode="lora",
-                learning_rate=1e-5,
+                finetune_mode="full",
+                learning_rate=1e-6,
                 num_steps=1000,
-                batch_size=16,
+                batch_size=256,
                 callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
                 eval_steps=100,
                 save_steps=100,
+                model_dir=model_dir,
                 store_weights=store_weights
         )
 
-    history_df = load_history(ticker)
+    history_df = load_history(ticker, resolution)
     context_df = (
         history_df[["model_timestamp", "ticker", "close", *covariates]]
         .sort_values("model_timestamp")
@@ -235,6 +250,11 @@ def run_model(
     if eval:
         initial_train_size = int(context_df.shape[0] * .80)
         e = walk_forward_predict(pipeline, context_df, pred_length, pred_length, context_length, initial_train_size, quantiles)
+        e = e.merge(
+                history_df[['model_timestamp','real_timestamp']],
+                on="model_timestamp",
+                how="inner"
+        )
         eval_results: EvaluationResult = evaluate(e, quantiles, prediction_interval)
 
         print(f"=== POINT FORECAST METRICS ===")
@@ -276,9 +296,12 @@ def run_model(
 
         print(f"\n=== PREDICTION INTERVAL ===")
         print(eval_results.intervals_by_horizon.to_string())
-        print(f"Mean PI coverage: {eval_results.pi_coverage:.2%}")
+        print(f"PI coverage: {eval_results.pi_coverage:.2%}")
         print(f"Nominal coverage: {eval_results.nominal_coverage:.2%}")
         print(f"Mean PI width: {eval_results.mean_interval_width:.8f}")
+
+        plot_predictions(np.arange(len(eval_results.y_pred)), eval_results.y_pred, eval_results.y_true)
+
 
     else:
         print(f"Performing walk-forward forecasting")
@@ -288,7 +311,7 @@ def run_model(
             1,
             1,
             context_length,
-            int(context_df.shape[0] * 0.98),
+            int(context_df.shape[0] * 0.90),
             quantiles,
         )
 
@@ -352,7 +375,7 @@ def load_chronos(
 ) -> Chronos2Pipeline:
     if model_dir and model_dir.exists():
         try: 
-            pipeline = Chronos2Pipeline.from_pretrained(
+            return Chronos2Pipeline.from_pretrained(
                 model_dir, device_map="cuda", local_files_only=True
             )
         except OSError as e:
@@ -399,7 +422,7 @@ def finetune_chronos(
         assert model_dir is not None, "model_dir is required when store_weights=True"
         fine_tuning_params['output_dir'] = model_dir
 
-    pipeline.fit(**fine_tuning_params)
+    pipeline = pipeline.fit(**fine_tuning_params)
 
     return pipeline
 
@@ -599,7 +622,7 @@ def evaluate(
             for q in quantiles
     }
 
-    ts_eval = eval.set_index("model_timestamp")
+    ts_eval = eval.set_index("real_timestamp")
     return EvaluationResult (
         ts_eval['predictions'], 
         ts_eval['close'], 
