@@ -18,7 +18,7 @@ def create_parser() -> ArgumentParser:
 
     create_fetch_parser(subparsers, shared)
     create_preprocess_parser(subparsers, shared)
-    create_model_parser(subparsers)
+    create_model_parser(subparsers, shared)
     create_fees_parser(subparsers)
 
     return parser
@@ -56,14 +56,17 @@ def create_preprocess_parser(subparsers: _SubParsersAction, common_args: Argumen
 
     return preproc_parser
 
-def create_model_parser(subparsers: _SubParsersAction) -> None:
-    parser: ArgumentParser = subparsers.add_parser("model", argument_default=SUPPRESS)
-    parser.add_argument("--ticker", '-t', type=str)
+def create_model_parser(subparsers: _SubParsersAction, common_args: ArgumentParser | None = None) -> None:
+    if common_args is None:
+        common_args = ArgumentParser(add_help=False)
+
+    parser: ArgumentParser = subparsers.add_parser("model", parents=[common_args], argument_default=SUPPRESS)
     parser.add_argument("--pred-length", "-p", type=int)
     parser.add_argument("--context-length", "-c", type=int)
     parser.add_argument("--train", '-T', action="store_true")
-    parser.add_argument("--zero-shot", '-z', action="store_true")
-    parser.add_argument("--eval", "-e", action="store_true")
+    parser.add_argument("--zero-shot", '-Z', action="store_true")
+    parser.add_argument("--eval", "-E", action="store_true")
+    parser.add_argument("--store-weights", '-S', action="store_true")
 
 
 def create_fees_parser(subparsers: _SubParsersAction) -> None:
@@ -77,4 +80,4 @@ def create_fees_parser(subparsers: _SubParsersAction) -> None:
     cost_group.add_argument("--round-trip-fee", "-F", type=float, help="Round trip fee per contract")
     cost_group.add_argument("--round-trip-commission", '-C', type=float, help="Round trip commission per contract")
     cost_group.add_argument("--all-in-round-trip-cost", '-A', type=float, help="Round trip fees + commission per contract")
-    cost_group.add_argument("--reset", '-r', action="store_true", help="Restore configuration file to defaults")
+    cost_group.add_argument("--reset", '-R', action="store_true", help="Restore configuration file to defaults")
