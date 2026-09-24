@@ -36,8 +36,8 @@ class MassiveParameters(TypedDict, total=False):
 
 @dataclass
 class EvaluationResult:
-    pred_df: Series
-    eval_df: Series 
+    y_pred: Series
+    y_true: Series 
     by_horizon: DataFrame
     mae: float
     baseline_mae: float
