@@ -109,14 +109,21 @@ class FetchRangeArgs(CommandArgs):
 
 
 class ModelArgs(CommandArgs):
-    ticker: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
     pred_length: int = Field(gt=0)
     context_length: int = Field(gt=0)
     eval: bool = Field(default=False)
     train: bool = Field(default=False)
     zero_shot: bool = Field(default=False)
+    store_weights: bool = Field(default=True)
     quantiles: list = Field(default_factory=lambda: [0.1,0.5,0.9])
     prediction_interval: tuple[float, float]
+
+    @model_validator(mode="after")
+    def flag_validation(self) -> Self:
+        if self.zero_shot and self.train:
+            raise ValueError("Cannot use --train with --zero-shot")
+        return self
 
     @field_validator("quantiles")
     @classmethod
