@@ -2,7 +2,7 @@ import pandas as pd
 from ..datareader import load_prior_data
 from ..datareader.readerutil import fetch_session_hours, get_product_code
 from pathlib import Path
-from ..config import PROCESSED_DATA_DIR
+from ..config import PROCESSED_DATA_DIR, RAW_DATA_DIR, TRAINING_DATA_DIR
 from ..typedefs import CandleResolution
 import numpy as np
 from .indicators.momentum import smoothed_rsi, RoC, fast_k, slow_k, cci
@@ -11,11 +11,17 @@ from .indicators.volatility import bollinger_bands, rolling_std, atr, vr, kc
 from .indicators.volume import vwap
 from .preproc_util import get_returns
 
-def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool) -> None:
-    processed_path: Path = Path(PROCESSED_DATA_DIR) / symbol
+def preprocess(symbol: str, resolution: str, train: bool) -> None:
+
+
+    processed_path: Path = Path(PROCESSED_DATA_DIR) / f"{symbol}-{resolution}"
     processed_path.mkdir(exist_ok=True, parents=True)
 
-    data: pd.DataFrame = load_prior_data(data_dir, symbol, train=train)
+    raw_dir: Path | None = None
+    if not train:
+        raw_dir = RAW_DATA_DIR / f"{symbol}-{resolution}"
+
+    data: pd.DataFrame = load_prior_data(symbol, resolution, data_dir=raw_dir, train=train)
 
     if data.empty:
         print(f"No data available for {symbol}.")
@@ -56,7 +62,6 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool) -> Non
         .sort_values("real_timestamp", ascending=False, kind="stable")
         .reset_index(drop=True)
     )
-
 
     candle_resolution: CandleResolution = CandleResolution(resolution)
 
@@ -129,8 +134,8 @@ def preprocess(symbol: str, resolution: str, data_dir: Path, train: bool) -> Non
     # Write data to parquete files.
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
-        path: str = f"{processed_path}/{symbol}-{day}.parquet"
-        prior: pd.DataFrame = load_prior_data(processed_path, symbol, day, day)
+        path: str = f"{processed_path}/{symbol}-{resolution}-{day}.parquet"
+        prior: pd.DataFrame = load_prior_data(symbol, resolution, day, day, processed_path)
         if not prior.empty:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
                 subset="real_timestamp"

@@ -53,26 +53,19 @@ def main():
                 massive_parameters,
                 create_massive_client(settings.massive_api_key),
                 args,
-                RAW_DATA_DIR / args.symbol
             )
         case FetchTrainArgs():
             fetch_train(
                     create_massive_client(settings.massive_api_key),
                     args,
-                    TRAINING_DATA_DIR / args.symbol
             )
 
         case PreprocessArgs():
-            if args.train:
-                data_dir = TRAINING_DATA_DIR / args.symbol
-            else:
-                data_dir = RAW_DATA_DIR / args.symbol
-
-            preprocess(args.symbol, args.resolution, data_dir, args.train)
+            preprocess(args.symbol, args.resolution, args.train)
 
         case ModelArgs():
             hf_token = settings.hf_token
-            contract_spec = fetch_contract_spec(args.ticker, create_massive_client(settings.massive_api_key))
+            contract_spec = fetch_contract_spec(args.symbol, create_massive_client(settings.massive_api_key))
             pred_interval: PredictionInterval = PredictionInterval.model_validate(
                 {
                     "lower": args.prediction_interval[0],
@@ -80,7 +73,8 @@ def main():
                 }
             )
             run_model(
-                    args.ticker, 
+                    args.symbol, 
+                    args.resolution,
                     args.pred_length,
                     args.context_length,
                     args.quantiles,
@@ -89,6 +83,7 @@ def main():
                     hf_token=hf_token, 
                     train=args.train,
                     zero_shot=args.zero_shot,
+                    store_weights=args.store_weights,
                     eval=args.eval
             )
 

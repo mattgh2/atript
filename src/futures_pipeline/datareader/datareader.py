@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
-from ..config import RAW_DATA_DIR
+from ..config import RAW_DATA_DIR, TRAINING_DATA_DIR
 from typing import cast, Hashable
 from collections import defaultdict
 from ..typedefs import CandleResolution
@@ -82,7 +82,7 @@ def fetch_contract_spec(ticker: str, client: RESTClient) -> ContractSpec:
 
 
 def fetch_training_set(
-    contract: str,
+    symbol: str,
     resolution: str,
     massive_client: RESTClient,
     from_date: date,
@@ -109,7 +109,7 @@ def fetch_training_set(
         # Get the leading ticker for this date.
         year = current.year
         expr_month, month_code =  leading_months[current.month]
-        ticker = ''.join((contract, month_code, str(current.year % 10)))
+        ticker = ''.join((symbol, month_code, str(current.year % 10)))
 
         if current >= mes_roll_date(year, expr_month):
             if expr_month == 12:
@@ -118,7 +118,7 @@ def fetch_training_set(
             else:
                 _, month_code = leading_months[expr_month + 1]
 
-        ticker = "".join((contract, month_code, str(year % 10)))
+        ticker = "".join((symbol, month_code, str(year % 10)))
 
         grouped_dates[ticker].append(current)
         current -= timedelta(days=1)
@@ -156,7 +156,7 @@ def fetch_training_set(
 
     # NOTE: Only supports resolutions [min, hour, sec]
     session_dates: dict[Hashable, list[pd.Timestamp]] = fetch_session_dates(
-        contract, massive_client, end_date.isoformat(), session_end.isoformat()
+        symbol, massive_client, end_date.isoformat(), session_end.isoformat()
     )
 
     res: CandleResolution = CandleResolution(resolution)
@@ -205,33 +205,41 @@ Loads stored data from disk from a range of dates
       If begin is omited, the function will return all data from 
       the least recent trading day to specified end date.
 """
-def load_train(symbol: str, data_dir: Path):
-    data = pd.read_parquet(f"{data_dir / symbol}-train.parquet")
+def load_train(symbol: str, resolution: str):
+    data_path: Path = TRAINING_DATA_DIR / f"{symbol}-{resolution}" / f"{symbol}-{resolution}-train.parquet"
+    data = pd.read_parquet(data_path)
     if data.empty:
         raise ValueError(f"No Data exists for {symbol}.")
     return data
 
 
 def load_prior_data(
-    data_dir: Path, symbol: str, begin: str = "", end: str = "", train: bool = False
+        symbol: str, 
+        resolution: str, 
+        begin: str = "", 
+        end: str = "", 
+        data_dir: Path | None = None, 
+        train: bool = False
 ) -> pd.DataFrame:
+
+    if train:
+        return load_train(symbol, resolution)
+
+    assert data_dir is not None, "data_dir must be provided when train=False"
 
     if not data_dir.is_dir():
         return pd.DataFrame()
 
-    if train:
-        return load_train(symbol, data_dir)
-
     if not begin:
         start_date = min(
-            date.fromisoformat(file.stem.removeprefix(f"{symbol}-"))
+            date.fromisoformat(file.stem.removeprefix(f"{symbol}-{resolution}-"))
             for file in data_dir.iterdir()
             if (file.is_file())
         )
     else:
         start_date = date.fromisoformat(begin) if isinstance(begin, str) else begin
     if not end:
-        end_date = max( date.fromisoformat(file.stem.removeprefix(f"{symbol}-"))
+        end_date = max(date.fromisoformat(file.stem.removeprefix(f"{symbol}-{resolution}-"))
             for file in data_dir.iterdir()
             if (file.is_file())
         )
@@ -242,7 +250,7 @@ def load_prior_data(
         f
         for f in data_dir.iterdir()
         if start_date
-        <= date.fromisoformat(f.stem.removeprefix(f"{symbol}-"))
+        <= date.fromisoformat(f.stem.removeprefix(f"{symbol}-{resolution}-"))
         <= end_date
     ]
 
@@ -377,7 +385,8 @@ def fetch_latest(
 ) -> pd.DataFrame:
     params = copy(massive_parameters)
     ticker: str = massive_parameters["ticker"]
-    data_dir = Path(RAW_DATA_DIR) / ticker
+    resolution: str = massive_parameters['resolution']
+    data_dir = RAW_DATA_DIR / f"{ticker}-{resolution}"
 
     # Load the latest observations from disk.
     last_observation: pd.DataFrame | None = load_last_n(data_dir, ticker, 1)
