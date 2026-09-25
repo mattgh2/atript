@@ -39,13 +39,20 @@ TIME = ['has_time_gap', 'log_elapsed_intervals']
 #       (5) For evaluation, use the remainder of len(context) - context_length. If context_length is very small
 #           e.g. context_lenth = 256, then this may not be reasonable.
 
-class TrainValidate(NamedTuple):
+class TrainTestValidate(NamedTuple):
     train: pd.DataFrame
+    test: pd.DataFrame
     validate: pd.DataFrame
 
-def load_and_split_training_set(train_size: float, symbol, resolution, context_length) -> TrainValidate:
+def load_and_split_training_set(
+    train_size: float, 
+    symbol: str, 
+    resolution: str, 
+    context_length: int,
+    pred_length: int
+) -> TrainTestValidate:
 
-    if not 0 < train_size <= 1:
+    if not 0 < train_size < 1:
         raise ValueError("train_size must be in the range (0, 1).")
 
     product_code = get_product_code(symbol)
@@ -60,36 +67,43 @@ def load_and_split_training_set(train_size: float, symbol, resolution, context_l
         raise RuntimeError("Missing training set.")
 
     train_df = train_df.sort_values(['ticker','real_timestamp'])
-    
+
     train_df['session_end_date'] = pd.to_datetime(train_df['session_end_date'])
 
-    first_date, last_date = train_df['session_end_date'].agg(['min','max'])
-    num_days: timedelta = last_date - first_date
+    # Hold out the final contract for evaluation.
+    final_contract = train_df.loc[
+        train_df["session_end_date"].eq(train_df["session_end_date"].max()), "ticker"
+    ].iloc[0]
 
-    # Number of days to use a validation targets.
-    validation_days: int = (num_days * (1-train_size)).days
-    validation_cut_off_date = last_date - timedelta(days=validation_days)
+    test_df = train_df[train_df['ticker'].eq(final_contract)]
+    train_df = train_df[train_df['ticker'].ne(final_contract)]
 
-    validation_df: pd.DataFrame = train_df[train_df['session_end_date'] >= validation_cut_off_date]
-    train_df = train_df[train_df['session_end_date'] < validation_cut_off_date].reset_index(drop=True)
 
-    # Validation DataFrame should include observations before the validation cutoff 
-    #       So the first context_length validation rows can be used as validation targets.
-    val_tickers = validation_df['ticker'].unique()
+    val_dfs: list[pd.DataFrame] = []
+    train_dfs: list[pd.DataFrame] = []
 
-    validation_context = (
-            train_df[train_df['ticker'].isin(val_tickers)]
-            .sort_values(['ticker','real_timestamp'])
-            .groupby('ticker', group_keys=False)
-            .tail(context_length)
-    )
+    for ticker, contract_df in train_df.groupby('ticker', sort=False):
+        split_idx: int = int(contract_df.shape[0] * train_size)
 
-    validation_df = pd.concat(
-            [validation_context, validation_df],
-            ignore_index=True
-    ).reset_index(drop=True)
+        # This check ensures that there is atleast one valid training window.
+        if split_idx < max(context_length, 2 * pred_length):
+            continue
 
-    return TrainValidate(train_df, validation_df)
+        # Need at least pred_length observations for validation.
+        # This ensures at least one valid validation window.
+        if contract_df.shape[0] - split_idx < pred_length:
+            continue
+
+        train_dfs.append(contract_df.iloc[:split_idx])
+        val_dfs.append(contract_df.iloc[split_idx - context_length:])
+
+    if not train_dfs or not val_dfs:
+        raise ValueError("not enough training data for the provided context_length.")
+
+    validation_df = pd.concat(val_dfs, ignore_index=True)
+    train_df = pd.concat(train_dfs, ignore_index=True)
+
+    return TrainTestValidate(train_df, test_df, validation_df)
 
 
 def load_history(ticker: str, resolution: str) -> pd.DataFrame:
@@ -137,17 +151,19 @@ def build_training_input(train_df, covariates: list[str], pred_length) -> list:
 
     return train
 
-
 def build_validation_input(
     val_df: pd.DataFrame, 
     covariates: list[str], 
     pred_length: int, 
     context_length: int
 ) -> list:
-    val = []
 
     """ Note: A validation item results in a single forecast window. 
-              Need to futher split each item into multiple validation windows."""
+              Need to futher split each item into multiple validation windows."""              
+
+    min_origins = float("inf")
+    val = []
+    contract_items = {}
     for ticker, contract_df in val_df.groupby('ticker', sort=False):
 
         # Ensure sorted by ascending timestamp and drop examples with missing labels.
@@ -162,6 +178,7 @@ def build_validation_input(
         # Overlap historical context with nonoverlapping prediction windows. 
         # Start at the end to prioritize the most recent data.
         forecast_origins = np.arange(len(contract_df) - pred_length, context_length - 1, -pred_length)[::-1]
+        min_origins = min(min_origins, len(forecast_origins))
 
         for origin in forecast_origins:
             window = contract_df.iloc[origin - context_length: origin + pred_length]
@@ -169,13 +186,23 @@ def build_validation_input(
                 column: np.array(values)
                 for column, values in window[[*covariates]].to_dict(orient="list").items()
             }
-            val.append(
+            contract_items.setdefault(ticker, []).append(
                 {
                     "target": window['close'].to_numpy(),
                     "past_covariates": past_covariates,
                     # "future_covariates": {} # TODO: load future time covariates
                 }
             ) 
+
+    # Reduce length of each item set down to min_origins.
+    for contract, items in contract_items.items():
+        items[:] = items[-min_origins:]
+
+    val = [
+            item for items in contract_items.values() 
+            for item in items
+    ]
+
     if not val:
         raise ValueError("No contracts contain enough validation observations.")
 
@@ -215,8 +242,12 @@ def run_model(
     )
 
     if train:
-        train_df, validate_df = load_and_split_training_set(
-            train_size=0.80, symbol=ticker, resolution=resolution, context_length=context_length
+        train_df, test_df, validate_df = load_and_split_training_set(
+            train_size=0.90,
+            symbol=ticker, 
+            resolution=resolution, 
+            context_length=context_length, 
+            pred_length=pred_length
         )
 
         # Build model inputs.
@@ -224,23 +255,39 @@ def run_model(
         validation_input = build_validation_input(validate_df, covariates, pred_length, context_length)
 
         pipeline = finetune_chronos(
-                pipeline=pipeline,
-                train=training_input,
-                validation=validation_input,
-                pred_length=pred_length,
-                context_length=context_length,
-                finetune_mode="full",
-                learning_rate=1e-6,
-                num_steps=1000,
-                batch_size=256,
-                callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
-                eval_steps=100,
-                save_steps=100,
-                model_dir=model_dir,
-                store_weights=store_weights
+            pipeline=pipeline,
+            train=training_input,
+            validation=validation_input,
+            pred_length=pred_length,
+            context_length=context_length,
+            finetune_mode="full",
+            learning_rate=1e-6,
+            num_steps=1000,
+            batch_size=256,
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+            eval_steps=100,
+            save_steps=100,
+            model_dir=model_dir,
+            store_weights=store_weights
         )
 
+        test_df = test_df[['model_timestamp', 'ticker', 'close', *covariates]]
+        e = walk_forward_predict(
+            pipeline, 
+            test_df, 
+            pred_length, 
+            pred_length, 
+            context_length, 
+            int(test_df.shape[0] * .80),
+            quantiles
+        )
+
+        eval_results = evaluate(e, quantiles, prediction_interval)
+        report_eval(eval_results)
+        return
+
     history_df = load_history(ticker, resolution)
+
     context_df = (
         history_df[["model_timestamp", "ticker", "close", *covariates]]
         .sort_values("model_timestamp")
@@ -249,58 +296,21 @@ def run_model(
 
     if eval:
         initial_train_size = int(context_df.shape[0] * .80)
-        e = walk_forward_predict(pipeline, context_df, pred_length, pred_length, context_length, initial_train_size, quantiles)
+        e = walk_forward_predict(pipeline, 
+            context_df, 
+            pred_length, 
+            pred_length, 
+            context_length, 
+            initial_train_size, 
+            quantiles
+        )
         e = e.merge(
                 history_df[['model_timestamp','real_timestamp']],
                 on="model_timestamp",
                 how="inner"
         )
         eval_results: EvaluationResult = evaluate(e, quantiles, prediction_interval)
-
-        print(f"=== POINT FORECAST METRICS ===")
-        print(eval_results.by_horizon.to_string())
-        print(f"MAE: {eval_results.mae:.8f}")
-        print(f"Baseline MAE: {eval_results.baseline_mae:.8f}")
-        print(f"MAE Skill: {eval_results.mae_skill:.2%}")
-        print(f"RMSE: {eval_results.rmse:.8f}")
-        print(f"Directional accuracy: {eval_results.directional_accuracy:.8f}\n")
-
-        # loss_skill = {
-        #         q: 1 - eval_results.loss[q] / eval_results.baseline_loss[q]
-        #         if eval_results.baseline_loss[q] != 0 else np.nan
-        #         for q in quantiles
-        # }
-
-        print(f"=== QUANTILE LOSS ===")
-        print(eval_results.by_horizon_loss.to_string())
-        # for t in zip(
-        #     eval_results.loss.items(),
-        #     eval_results.baseline_loss.items(),
-        #     loss_skill.items(),
-        # ):
-        #     (quantile, avg_loss), (_, baseline_loss), (_, loss_skill) = t
-        #     print(f"avg loss for {quantile:.2%}th quantile: {avg_loss:.10f}")
-        #     print(f"avg baseline loss for {quantile:.2%}th quantile: {baseline_loss:.10f}")
-        #     print(f"loss skill for {quantile:.2%}th quantile: {loss_skill:.2%}\n")
-
-        for quantile, avg_loss in eval_results.loss.items():
-            print(f"avg loss for {quantile:.2%}th quantile: {avg_loss:.10f}")
-
-        print(f" === Quantile Calibration === ")
-        for q, v in eval_results.quantile_calibration.items():
-            print(f"q={q}: {v}")
-
-        print(f" \n=== Calibration Error === ")
-        for q, v in eval_results.calibration_error.items():
-            print(f"q={q}: {v}")
-
-        print(f"\n=== PREDICTION INTERVAL ===")
-        print(eval_results.intervals_by_horizon.to_string())
-        print(f"PI coverage: {eval_results.pi_coverage:.2%}")
-        print(f"Nominal coverage: {eval_results.nominal_coverage:.2%}")
-        print(f"Mean PI width: {eval_results.mean_interval_width:.8f}")
-
-        plot_predictions(np.arange(len(eval_results.y_pred)), eval_results.y_pred, eval_results.y_true)
+        report_eval(eval_results)
 
 
     else:
@@ -311,7 +321,7 @@ def run_model(
             1,
             1,
             context_length,
-            int(context_df.shape[0] * 0.90),
+            int(context_df.shape[0] * 0.80),
             quantiles,
         )
 
@@ -772,3 +782,50 @@ def calculate_signal_point(threshold, diff):
     else:
         signal = Signal.HOLD
     return signal
+
+def report_eval(eval_results: EvaluationResult) -> None:
+    print(f"=== POINT FORECAST METRICS ===")
+    print(eval_results.by_horizon.to_string())
+    print(f"MAE: {eval_results.mae:.8f}")
+    print(f"Baseline MAE: {eval_results.baseline_mae:.8f}")
+    print(f"MAE Skill: {eval_results.mae_skill:.2%}")
+    print(f"RMSE: {eval_results.rmse:.8f}")
+    print(f"Directional accuracy: {eval_results.directional_accuracy:.8f}\n")
+
+    # loss_skill = {
+    #         q: 1 - eval_results.loss[q] / eval_results.baseline_loss[q]
+    #         if eval_results.baseline_loss[q] != 0 else np.nan
+    #         for q in quantiles
+    # }
+
+    print(f"=== QUANTILE LOSS ===")
+    print(eval_results.by_horizon_loss.to_string())
+    # for t in zip(
+    #     eval_results.loss.items(),
+    #     eval_results.baseline_loss.items(),
+    #     loss_skill.items(),
+    # ):
+    #     (quantile, avg_loss), (_, baseline_loss), (_, loss_skill) = t
+    #     print(f"avg loss for {quantile:.2%}th quantile: {avg_loss:.10f}")
+    #     print(f"avg baseline loss for {quantile:.2%}th quantile: {baseline_loss:.10f}")
+    #     print(f"loss skill for {quantile:.2%}th quantile: {loss_skill:.2%}\n")
+
+    for quantile, avg_loss in eval_results.loss.items():
+        print(f"avg loss for {quantile:.2%}th quantile: {avg_loss:.10f}")
+
+    print(f" === Quantile Calibration === ")
+    for q, v in eval_results.quantile_calibration.items():
+        print(f"q={q}: {v}")
+
+    print(f" \n=== Calibration Error === ")
+    for q, v in eval_results.calibration_error.items():
+        print(f"q={q}: {v}")
+
+    print(f"\n=== PREDICTION INTERVAL ===")
+    print(eval_results.intervals_by_horizon.to_string())
+    print(f"PI coverage: {eval_results.pi_coverage:.2%}")
+    print(f"Nominal coverage: {eval_results.nominal_coverage:.2%}")
+    print(f"Mean PI width: {eval_results.mean_interval_width:.8f}")
+
+    plot_predictions(np.arange(len(eval_results.y_pred)), eval_results.y_pred, eval_results.y_true)
+
