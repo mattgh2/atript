@@ -43,7 +43,7 @@ def create_fetch_parser(subparsers: _SubParsersAction, common_args: ArgumentPars
     train_parser: ArgumentParser = fetch_subparsers.add_parser("train", parents=[common_args], argument_default=SUPPRESS)
     train_parser.add_argument('--years', '-y', type=int, help="Number of years to from the current year to collect.")
     train_parser.add_argument('--contract', '-c', type=str)
-    train_parser.add_argument('--from-date', '-f', help="date to start collection on.")
+    train_parser.add_argument('--from-date', '-f')
     
     return fetch_parser
 

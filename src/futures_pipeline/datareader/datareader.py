@@ -13,6 +13,9 @@ from collections import defaultdict
 from ..typedefs import CandleResolution
 from enum import IntEnum
 from .readerutil import session_bounds, mes_roll_date, fetch_session_dates, get_product_code
+from tqdm import tqdm
+
+from calendar import Month
 
 """
 Fetches OHLC data from Massive.com.
@@ -77,8 +80,17 @@ def fetch_contract_spec(ticker: str, client: RESTClient) -> ContractSpec:
             contract=ticker,
             tick_size=tick_size,
             price_per_tick=price_per_tick,
-            multiplier=multiplier
-    )
+            multiplier=multiplier)
+
+def closest_rollover(year: int, month: int) -> date:
+    # Ensure the ending month is one of the roll months.
+    roll_month = month - month % 3
+
+    if roll_month == 0:
+        roll_month = 12
+        year -= 1
+
+    return mes_roll_date(year, roll_month)
 
 
 def fetch_training_set(
@@ -88,40 +100,52 @@ def fetch_training_set(
     from_date: date,
     num_years: int = 1,
 ) -> pd.DataFrame:
-    leading_months: dict[int, tuple[int,str]] = {
-            1: (3, "H"), 2: (3,"H"), 3: (3,"H"),
-            4: (6, "M"), 5: (6,"M"), 6: (6,"M"),
-            7: (9,"U"), 8: (9,"U"), 9: (9,"U"),
-            10: (12,"Z"), 11: (12,"Z"), 12: (12,"Z"),
+
+    leading_months: dict[Month, tuple[Month, str]] = {
+        Month.JANUARY: (Month.MARCH, "H"), Month.FEBRUARY: (Month.MARCH, "H"),
+        Month.MARCH: (Month.MARCH, "H"), Month.APRIL: (Month.JUNE, "M"),
+        Month.MAY: (Month.JUNE, "M"), Month.JUNE: (Month.JUNE, "M"),
+        Month.JULY: (Month.SEPTEMBER, "U"), Month.AUGUST: (Month.SEPTEMBER, "U"),
+        Month.SEPTEMBER: (Month.SEPTEMBER, "U"), Month.OCTOBER: (Month.DECEMBER, "Z"),
+        Month.NOVEMBER: (Month.DECEMBER, "Z"), Month.DECEMBER: (Month.DECEMBER, "Z"),
     }
 
-    # Get the current year, current month.
     session_end: date = from_date
-    end_date = session_end - relativedelta(years=num_years)
+
+    end_session = closest_rollover(session_end.year, session_end.month)
+
+    # from_date lands on a roll month which is less than the roll date.
+    if from_date < end_session:
+        end_session = closest_rollover(session_end.year, session_end.month - 1)
+
+    start_date = end_session - relativedelta(years=num_years)
+    start_session = mes_roll_date(start_date.year, start_date.month)
 
     grouped_dates: defaultdict[str, list[date]] = defaultdict(list)
-    # expirations: dict[str, date] = {}
 
-    current = session_end
+    num_days = (end_session - start_session).days
+
+    # Convert a date range to a iterable of dates.
+    dates = (end_session - timedelta(days=offset) for offset in range(1, num_days + 1))
 
     # Group dates by leading contract
-    while current >= end_date:
+    for current in tqdm(dates, "Calculating leading contracts"):
         # Get the leading ticker for this date.
         year = current.year
-        expr_month, month_code =  leading_months[current.month]
+        expr_month, month_code =  leading_months[Month(current.month)]
         ticker = ''.join((symbol, month_code, str(current.year % 10)))
 
+        # Rollover begins at 17:00 CT the day before the roll date.
         if current >= mes_roll_date(year, expr_month):
             if expr_month == 12:
                 month_code = 'H'
                 year += 1
             else:
-                _, month_code = leading_months[expr_month + 1]
+                _, month_code = leading_months[Month(expr_month + 1)]
 
         ticker = "".join((symbol, month_code, str(year % 10)))
 
         grouped_dates[ticker].append(current)
-        current -= timedelta(days=1)
 
     for month_code, dates in grouped_dates.items():
         dates.sort()
@@ -129,12 +153,12 @@ def fetch_training_set(
 
     print(
         f"Collecting {num_years} year(s) worth of data. "
-        f"Starting at {session_end}, ending at {end_date}."
+        f"Starting at {start_session}, ending before {end_session}."
     )
 
     data = []
 
-    for tic, date_range in grouped_dates.items():
+    for tic, date_range in tqdm(grouped_dates.items(), "Fetching data"):
         start, end = session_bounds(date_range[0], date_range[1])
         params: MassiveParameters = {
                 "ticker": tic,
@@ -156,13 +180,14 @@ def fetch_training_set(
 
     # NOTE: Only supports resolutions [min, hour, sec]
     session_dates: dict[Hashable, list[pd.Timestamp]] = fetch_session_dates(
-        symbol, massive_client, end_date.isoformat(), session_end.isoformat()
+        symbol, massive_client, start_session.isoformat(), end_session.isoformat()
     )
 
     res: CandleResolution = CandleResolution(resolution)
 
     refetched = []
-    for day, df in result.groupby('session_end_date'):
+    groups = result.groupby('session_end_date')
+    for day, df in tqdm(groups, total=groups.ngroups, desc="Retrying incomplete sessions"):
         start, end = session_dates[day]
 
         elapsed: timedelta = end - start
