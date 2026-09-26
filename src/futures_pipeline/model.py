@@ -60,7 +60,7 @@ def load_and_split_training_set(
     train_df: pd.DataFrame = load_prior_data(
         symbol=product_code, 
         resolution=resolution,
-        train=True
+        data_dir = PROCESSED_DATA_DIR / f"{symbol}-{resolution}"
     )
 
     if train_df.empty:
@@ -229,15 +229,13 @@ def run_model(
     model_dir: Path | None = None
 
     # Get the trained model directory.
-    if not zero_shot:
-        model_dir = MODEL_DIR / f"{get_product_code(ticker)}-{resolution}"
+    output_dir = MODEL_DIR / f"{get_product_code(ticker)}-{resolution}"
+    checkpoint_dir = output_dir / "finetuned_ckpt"
 
-    # Append the location of the model checkpoint.
-    if not train and model_dir is not None:
-        model_dir /= "finetune-ckpt"
+    load_dir = None if train or zero_shot else checkpoint_dir
 
     pipeline = load_chronos(
-        model_dir,
+        load_dir,
         hf_token=hf_token,
     )
 
@@ -267,11 +265,13 @@ def run_model(
             callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
             eval_steps=100,
             save_steps=100,
-            model_dir=model_dir,
+            model_dir=output_dir,
             store_weights=store_weights
         )
 
+        timestamps = test_df[['model_timestamp', 'real_timestamp']]
         test_df = test_df[['model_timestamp', 'ticker', 'close', *covariates]]
+
         e = walk_forward_predict(
             pipeline, 
             test_df, 
@@ -280,6 +280,12 @@ def run_model(
             context_length, 
             int(test_df.shape[0] * .80),
             quantiles
+        )
+
+        e = e.merge(
+                timestamps,
+                on="model_timestamp",
+                how="inner"
         )
 
         eval_results = evaluate(e, quantiles, prediction_interval)
