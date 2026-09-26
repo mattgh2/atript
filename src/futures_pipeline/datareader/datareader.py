@@ -389,9 +389,13 @@ def fetch_range(
     begin: date, end: date, massive_parameters: MassiveParameters, massive_client
 ) -> pd.DataFrame:
 
+    session_start, session_end = session_bounds(begin,end)
+
     params: MassiveParameters = copy(massive_parameters)
-    params["window_start_gte"] = begin.isoformat()
-    params["window_start_lte"] = (end + timedelta(days=1)).isoformat()
+    params["window_start_gte"] = session_start.isoformat()
+    params["window_start_lte"] = session_end.isoformat()
+
+    
 
     print(f"Fetching data for {massive_parameters['ticker']} between {begin} and {end}")
     data = fetch_data(massive_client, params)
