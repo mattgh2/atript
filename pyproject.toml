@@ -20,6 +20,10 @@ dependencies = [
     "autogluon.timeseries",
     "tomlkit",
     "transformers"
+    "torch>=2.8",
+    "torchvision",
+    "torchaudio"
+
 ]
 [project.scripts]
 atript = "futures_pipeline.__main__:main"
