@@ -60,7 +60,7 @@ def load_and_split_training_set(
     train_df: pd.DataFrame = load_prior_data(
         symbol=product_code, 
         resolution=resolution,
-        data_dir = PROCESSED_DATA_DIR / f"{symbol}-{resolution}"
+        data_dir = PROCESSED_DATA_DIR / f"{product_code}-{resolution}"
     )
 
     if train_df.empty:
