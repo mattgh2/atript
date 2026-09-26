@@ -66,7 +66,7 @@ def create_model_parser(subparsers: _SubParsersAction, common_args: ArgumentPars
     parser.add_argument("--train", '-T', action="store_true")
     parser.add_argument("--zero-shot", '-Z', action="store_true")
     parser.add_argument("--eval", "-E", action="store_true")
-    parser.add_argument("--store-weights", '-S', action="store_true")
+    parser.add_argument("--no-store-weights", '-S', action="store_true")
 
 
 def create_fees_parser(subparsers: _SubParsersAction) -> None:

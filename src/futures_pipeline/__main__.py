@@ -83,7 +83,7 @@ def main():
                     hf_token=hf_token, 
                     train=args.train,
                     zero_shot=args.zero_shot,
-                    store_weights=args.store_weights,
+                    store_weights= not args.no_store_weights,
                     eval=args.eval
             )
 

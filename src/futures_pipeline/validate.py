@@ -115,7 +115,7 @@ class ModelArgs(CommandArgs):
     eval: bool = Field(default=False)
     train: bool = Field(default=False)
     zero_shot: bool = Field(default=False)
-    store_weights: bool = Field(default=True)
+    no_store_weights: bool = Field(default=False)
     quantiles: list = Field(default_factory=lambda: [0.1,0.5,0.9])
     prediction_interval: tuple[float, float]
 
