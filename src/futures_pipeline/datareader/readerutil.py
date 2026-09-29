@@ -9,6 +9,9 @@ from ..massive_client import create_massive_client
 import re
 from tqdm import tqdm
 import pandas_market_calendars as mcal
+from logging import Logger
+
+logger = Logger(name='log', level=2)
 
 def session_bounds(first: date, last: date) -> tuple[datetime, datetime]:
     chicago = ZoneInfo("America/Chicago")
@@ -59,6 +62,9 @@ def fetch_session_dates(
     df = df[df['event'].isin(['open','close'])]
 
     df['timestamp'] = df['timestamp'].map(lambda t: pd.Timestamp(t, tz="America/Chicago"))
+    df['session_end_date'] = pd.to_datetime(
+            df['session_end_date']
+    )
 
     opens: pd.Series = (
         df[df["event"] == "open"].groupby("session_end_date")["timestamp"].min()
@@ -77,15 +83,22 @@ def fetch_session_dates(
     min_session = df['session_end_date'].min()
     max_session = df['session_end_date'].max()
 
-    num_days = max_session - min_session
+    num_days = (max_session - min_session).days
     session_index = set(sessions.index)
 
+    trade_dates = mcal.get_calendar("CME_TradeDate")
+
     for day in tqdm(
-        (min_session + offset for offset in range(1, num_days + 1)), 
+        (min_session + timedelta(days=offset) for offset in range(1, num_days + 1)), 
         desc="Filling in missing sessions using pandas_market_calendars api"
     ):
         if day not in session_index:
-            open, close = cme_session_dates_fallback(day)
+            if trade_dates.valid_days(day, day).empty or day in session_index:
+                continue
+
+            schedule: pd.DataFrame = cme_session_dates_fallback(day)
+            open = pd.Timestamp(schedule.iloc[0]['market_open']), 
+            close = pd.Timestamp(schedule.iloc[-1]['market_close'])
             sessions.loc['session_end_date'] = [open, close]
 
     return sessions.to_dict()
@@ -97,7 +110,7 @@ pandas_market_calender api shall be called.
 """
 def cme_session_dates_fallback(
     trade_date: str,
-) -> list[pd.Timestamp]:
+) -> pd.DataFrame:
 
     equity = mcal.get_calendar("CME_Equity")
     trade_dates = mcal.get_calendar("CME_TradeDate")
@@ -105,7 +118,7 @@ def cme_session_dates_fallback(
     day = pd.Timedelta(days=1)
 
     if trade_dates.valid_days(target, target).empty:
-        raise ValueError(f"{trade_date} is not a valid trade date.")
+        raise ValueError(f"{trade_date} is not a valid trading date.")
 
     # Locate the preceding business trade date.
     previous = target - day
@@ -119,10 +132,8 @@ def cme_session_dates_fallback(
         tz="America/Chicago",
     )
 
-    return [
-            pd.Timestamp(schedule.iloc[0]['market_open']), 
-            pd.Timestamp(schedule.iloc[-1]['market_close'])
-    ]
+
+    return schedule
 
 def fetch_session_hours(product: str, begin: str, end: str, client: RESTClient | None = None) -> dict[str, list]:
     if client is None:
@@ -132,13 +143,48 @@ def fetch_session_hours(product: str, begin: str, end: str, client: RESTClient |
             product_code=product,
             session_end_date_gte=begin,
             session_end_date_lte=end
-    )
+    ) 
 
     df = pd.DataFrame.from_records(vars(d) for d in schedules)
+
+    start_session = pd.Timestamp(begin)
+    end_session = pd.Timestamp(end)
+
+    num_days = (end_session - start_session).days
+    sessions = set(df['session_end_date'] if not df.empty else ())
+    trade_dates = mcal.get_calendar("CME_TradeDate")
+
+    missing_schedules = []
+    for day in (start_session + timedelta(days=offset) for offset in range(num_days + 1)):
+        if trade_dates.valid_days(day,day).empty or day in sessions:
+            continue
+
+        schedule: pd.DataFrame = cme_session_dates_fallback(day.isoformat())
+        schedule = schedule.rename(columns={"break_start" : "pre_open", 'market_open': 'open', "market_close" : "close"})
+        schedule = schedule.reset_index(names=['session_end_date'])
+
+        schedule = schedule.melt( 
+            id_vars="session_end_date",
+            value_vars=['open', 'close', 'pre_open'],
+            var_name='event',
+            value_name='timestamp'
+        )
+
+        # Filter out maintenance breaks
+        pre_opens = schedule[schedule['event'] == 'pre_open']['timestamp']
+        maintenance = (pre_opens.dt.time == time(15,15))
+        schedule = schedule.drop(pre_opens.index[maintenance]).reset_index(drop=True)
+        missing_schedules.append(schedule)
+
+    df = pd.concat([df, *missing_schedules])
+    df = df[['session_end_date', 'timestamp', 'event']]
+
     if df.empty:
         raise ValueError('Failed to fetch schedule data.')
 
     df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors="coerce").dt.tz_convert("America/Chicago")
+    df['session_end_date'] = pd.to_datetime(df['session_end_date'])
+
 
     session_trading_hours = defaultdict(list)
     for end_date, d in df.groupby("session_end_date")[['timestamp', 'event']]:
