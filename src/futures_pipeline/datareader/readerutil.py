@@ -7,6 +7,8 @@ from typing import Hashable
 from ..config import load_settings
 from ..massive_client import create_massive_client
 import re
+from tqdm import tqdm
+import pandas_market_calendars as mcal
 
 def session_bounds(first: date, last: date) -> tuple[datetime, datetime]:
     chicago = ZoneInfo("America/Chicago")
@@ -35,8 +37,12 @@ def mes_roll_date(year: int, month: int) -> date:
     return third_friday - timedelta(days=4)
 
 
+# NOTE: MUST BE CALLED WITH A CONTRACT FROM THE CME.
 def fetch_session_dates(
-    contract: str, client: RESTClient, begin: str, end: str
+    contract: str, 
+    client: RESTClient, 
+    begin: str, 
+    end: str
 ) -> dict[Hashable, list[pd.Timestamp]]:
 
     schedules = client.list_futures_schedules(
@@ -45,7 +51,6 @@ def fetch_session_dates(
         session_end_date_gte=begin,
         session_end_date_lte=end
     )
-
     df = pd.DataFrame.from_records(vars(d) for d in schedules)
 
     if df.empty:
@@ -61,13 +66,63 @@ def fetch_session_dates(
     closes: pd.Series = (
         df[df["event"] == "close"].groupby("session_end_date")["timestamp"].max()
     )
-    sessions = pd.concat([opens.rename("open"), closes.rename("close")], axis=1).apply(
-        list, axis=1
-    )
-    if sessions.isna().any():
+
+    sessions = pd.concat([opens.rename("open"), closes.rename("close")], axis=1, join='inner')
+
+    if any(sessions.isna().any()):
         raise ValueError("A session is missing its opening or closing timestamp.")
 
+    sessions = sessions.apply(list, axis=1)
+
+    min_session = df['session_end_date'].min()
+    max_session = df['session_end_date'].max()
+
+    num_days = max_session - min_session
+    session_index = set(sessions.index)
+
+    for day in tqdm(
+        (min_session + offset for offset in range(1, num_days + 1)), 
+        desc="Filling in missing sessions using pandas_market_calendars api"
+    ):
+        if day not in session_index:
+            open, close = cme_session_dates_fallback(day)
+            sessions.loc['session_end_date'] = [open, close]
+
     return sessions.to_dict()
+
+"""
+Subroutine for ``fetch_session_dates`` if massive.com 
+lacks schedule information for a specified date, in which case the 
+pandas_market_calender api shall be called.
+"""
+def cme_session_dates_fallback(
+    trade_date: str,
+) -> list[pd.Timestamp]:
+
+    equity = mcal.get_calendar("CME_Equity")
+    trade_dates = mcal.get_calendar("CME_TradeDate")
+    target = pd.Timestamp(trade_date).normalize()
+    day = pd.Timedelta(days=1)
+
+    if trade_dates.valid_days(target, target).empty:
+        raise ValueError(f"{trade_date} is not a valid trade date.")
+
+    # Locate the preceding business trade date.
+    previous = target - day
+    while trade_dates.valid_days(previous, previous).empty:
+        previous -= day
+
+    # Include schedule days after the preceding trade date.
+    schedule = equity.schedule(
+        start_date=previous + day,
+        end_date=target,
+        tz="America/Chicago",
+    )
+
+    return [
+            pd.Timestamp(schedule.iloc[0]['market_open']), 
+            pd.Timestamp(schedule.iloc[-1]['market_close'])
+    ]
 
 def fetch_session_hours(product: str, begin: str, end: str, client: RESTClient | None = None) -> dict[str, list]:
     if client is None:
