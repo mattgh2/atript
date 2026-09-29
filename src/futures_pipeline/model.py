@@ -31,9 +31,6 @@ TIME = ['has_time_gap', 'log_elapsed_intervals']
 #     "lower_kc",
 #     "bollinger_squeeze",
 # ]
-
-# TODO: (1) Should each contract have the same number of validation items?
-#           More items contribute more to loss thus resulting in unequal ticker contributions.
 #       (2) In build_validation_set, reduce context_length if too large. bsearch?
 #       (3) Tune Context length for training (4) Find optimal context length for inference.
 #       (5) For evaluation, use the remainder of len(context) - context_length. If context_length is very small
@@ -278,7 +275,6 @@ def run_model(
             pred_length, 
             pred_length, 
             context_length, 
-            int(test_df.shape[0] * .80),
             quantiles
         )
 
@@ -301,13 +297,11 @@ def run_model(
     )
 
     if eval:
-        initial_train_size = int(context_df.shape[0] * .80)
         e = walk_forward_predict(pipeline, 
             context_df, 
             pred_length, 
             pred_length, 
             context_length, 
-            initial_train_size, 
             quantiles
         )
         e = e.merge(
@@ -327,7 +321,6 @@ def run_model(
             1,
             1,
             context_length,
-            int(context_df.shape[0] * 0.80),
             quantiles,
         )
 
@@ -487,12 +480,12 @@ def walk_forward_predict(
     step: int,
     horizon: int,
     context_length: int,
-    initial_train_size: int,
     quantiles: list[float],
 ) -> pd.DataFrame:
     results: list[pd.DataFrame] = []
+
     last = context_df.shape[0] - horizon
-    for window_len in tqdm(range(initial_train_size, last + 1, step)):
+    for window_len in tqdm(range(context_length + 1, last + 1, step)):
         pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, context_length, quantiles)
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
         pred_df['forecast_origin'] = context_df.iloc[window_len - 1]['model_timestamp']
