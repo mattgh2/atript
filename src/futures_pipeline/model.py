@@ -227,7 +227,7 @@ def run_model(
 
     # Get the trained model directory.
     output_dir = MODEL_DIR / f"{get_product_code(ticker)}-{resolution}"
-    checkpoint_dir = output_dir / "finetuned_ckpt"
+    checkpoint_dir = output_dir / "finetuned-ckpt"
 
     load_dir = None if train or zero_shot else checkpoint_dir
 
