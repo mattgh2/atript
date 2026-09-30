@@ -40,8 +40,6 @@ def fetch_data(
     try:
         first = next(data)
     except StopIteration:
-        from pprint import pprint
-        pprint(fetch_parameters)
         print("No data Returned")
         return
     yield first
@@ -290,20 +288,21 @@ Loads a tickers most recent trading day from disk.
 
 @param ticker The ticker to use.
 """
-def load_latest_day(data_dir: Path | str, ticker: str) -> pd.DataFrame | None:
+def load_latest_day(data_dir: Path | str, ticker: str, resolution) -> pd.DataFrame:
     if not isinstance(data_dir, Path):
         data_dir = Path(data_dir)
-    if not data_dir.is_dir():
-        print(f"No such directory for {ticker} exists.")
-        return None
+    target_dir = data_dir / f"{ticker}-{resolution}"
+
+    if not target_dir.is_dir():
+        raise ValueError(f"No data for {resolution}, {ticker} exists.")
 
     target_file: Path | None = max(
-        (file for file in data_dir.iterdir() if file.is_file()),
-        key=lambda file: date.fromisoformat(file.stem.removeprefix(f"{ticker}-")),
+        (file for file in target_dir.iterdir() if file.is_file()),
+        key=lambda file: date.fromisoformat(file.stem.removeprefix(f"{ticker}-{resolution}-")),
         default=None,
     )
     if target_file is None:
-        return None
+        raise ValueError(f"No data for {resolution}, {ticker} exists.")
 
     return pd.read_parquet(target_file)
 
@@ -394,8 +393,6 @@ def fetch_range(
     params: MassiveParameters = copy(massive_parameters)
     params["window_start_gte"] = session_start.isoformat()
     params["window_start_lte"] = session_end.isoformat()
-
-    
 
     print(f"Fetching data for {massive_parameters['ticker']} between {begin} and {end}")
     data = fetch_data(massive_client, params)
