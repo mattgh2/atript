@@ -170,6 +170,8 @@ def fetch_training_set(
         data.extend(fetch_data(massive_client, params))
 
     result = pd.DataFrame.from_records(vars(d) for d in data)
+    if result.empty:
+        raise ValueError('No training data was collected.')
 
     class time_scale(IntEnum):
         hour = 0
@@ -177,7 +179,7 @@ def fetch_training_set(
         sec = 2
 
     # NOTE: Only supports resolutions [min, hour, sec]
-    session_dates: dict[Hashable, list[pd.Timestamp]] = fetch_session_dates(
+    session_dates: dict[str, list[pd.Timestamp]] = fetch_session_dates(
         symbol, massive_client, start_session.isoformat(), end_session.isoformat()
     )
 
@@ -185,12 +187,19 @@ def fetch_training_set(
 
     refetched = []
     groups = result.groupby('session_end_date')
+    
     for day, df in tqdm(groups, total=groups.ngroups, desc="Retrying incomplete sessions"):
-        start, end = session_dates[day]
+
+        # Day is still missing from both massive.com and mcal. Just skip this day.
+        if not session_dates.get(str(day)):
+            continue
+
+        start, end = session_dates[pd.Timestamp(str(day)).strftime("%Y-%m-%d")]
 
         elapsed: timedelta = end - start
         num_hours: float = elapsed.total_seconds() / 3600
 
+        # Hardcoded to full session amounts. Does not care about holiday closures.
         max_rows = num_hours * 60 ** time_scale[res.unit] // res.length
         if (df.shape[0] < max_rows):
             params = { 
