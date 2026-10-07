@@ -12,10 +12,14 @@ from typing import cast, Hashable
 from collections import defaultdict
 from ..typedefs import CandleResolution
 from enum import IntEnum
-from .readerutil import session_bounds, mes_roll_date, fetch_session_dates, get_product_code
+from .readerutil import session_bounds, mes_roll_date, fetch_session_dates, get_product_code, fetch_session_hours, get_ticker
 from tqdm import tqdm
+import pandas_market_calendars as mcal
+from logging import Logger
 
 from calendar import Month
+
+warnings = Logger('log', level=2)
 
 """
 Fetches OHLC data from Massive.com.
@@ -99,15 +103,6 @@ def fetch_training_set(
     num_years: int = 1,
 ) -> pd.DataFrame:
 
-    leading_months: dict[Month, tuple[Month, str]] = {
-        Month.JANUARY: (Month.MARCH, "H"), Month.FEBRUARY: (Month.MARCH, "H"),
-        Month.MARCH: (Month.MARCH, "H"), Month.APRIL: (Month.JUNE, "M"),
-        Month.MAY: (Month.JUNE, "M"), Month.JUNE: (Month.JUNE, "M"),
-        Month.JULY: (Month.SEPTEMBER, "U"), Month.AUGUST: (Month.SEPTEMBER, "U"),
-        Month.SEPTEMBER: (Month.SEPTEMBER, "U"), Month.OCTOBER: (Month.DECEMBER, "Z"),
-        Month.NOVEMBER: (Month.DECEMBER, "Z"), Month.DECEMBER: (Month.DECEMBER, "Z"),
-    }
-
     session_end: date = from_date
 
     end_session = closest_rollover(session_end.year, session_end.month)
@@ -128,23 +123,11 @@ def fetch_training_set(
 
     # Group dates by leading contract
     for current in tqdm(dates, "Calculating leading contracts"):
-        # Get the leading ticker for this date.
-        year = current.year
-        expr_month, month_code =  leading_months[Month(current.month)]
-        ticker = ''.join((symbol, month_code, str(current.year % 10)))
-
-        # Rollover begins at 17:00 CT the day before the roll date.
-        if current >= mes_roll_date(year, expr_month):
-            if expr_month == 12:
-                month_code = 'H'
-                year += 1
-            else:
-                _, month_code = leading_months[Month(expr_month + 1)]
-
-        ticker = "".join((symbol, month_code, str(year % 10)))
+        ticker = get_ticker(symbol, current)
 
         grouped_dates[ticker].append(current)
 
+    # Reduce the list of dates to a the range [first, last].
     for month_code, dates in grouped_dates.items():
         dates.sort()
         grouped_dates[month_code] = [dates[0], dates[-1]]
@@ -173,46 +156,68 @@ def fetch_training_set(
     if result.empty:
         raise ValueError('No training data was collected.')
 
+
     class time_scale(IntEnum):
         hour = 0
         min = 1
         sec = 2
 
     # NOTE: Only supports resolutions [min, hour, sec]
-    session_dates: dict[str, list[pd.Timestamp]] = fetch_session_dates(
-        symbol, massive_client, start_session.isoformat(), end_session.isoformat()
+    session_dates: dict[Hashable, list[pd.Timestamp]] = fetch_session_dates(
+        symbol, start_session.isoformat(), end_session.isoformat(), massive_client
+    )
+    session_hours: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = fetch_session_hours(
+            symbol, 
+            start_session.isoformat(), 
+            end_session.isoformat(), 
+            massive_client
     )
 
     res: CandleResolution = CandleResolution(resolution)
 
-    refetched = []
-    groups = result.groupby('session_end_date')
+    trade_dates = mcal.get_calendar('CME_TradeDate')
+
+    refetched: list[pd.DataFrame] = []
+    sessions = trade_dates.valid_days(start_session, end_session - timedelta(days=1))
     
-    for day, df in tqdm(groups, total=groups.ngroups, desc="Retrying incomplete sessions"):
+    for day in tqdm(sessions, total=len(sessions), desc="Retrying incomplete sessions"):
+        day = pd.Timestamp(day).strftime("%Y-%m-%d")
 
         # Day is still missing from both massive.com and mcal. Just skip this day.
-        if not session_dates.get(str(day)):
+        if not session_dates.get(day) or not session_hours.get(day):
             continue
 
-        start, end = session_dates[pd.Timestamp(str(day)).strftime("%Y-%m-%d")]
+        start, end = session_dates[day]
+        time_intervals = session_hours[day]
 
-        elapsed: timedelta = end - start
-        num_hours: float = elapsed.total_seconds() / 3600
+        num_hours = 0
+        for interval in time_intervals:
+            num_hours += (interval[1] - interval[0]).total_seconds() / 3600
 
-        # Hardcoded to full session amounts. Does not care about holiday closures.
         max_rows = num_hours * 60 ** time_scale[res.unit] // res.length
-        if (df.shape[0] < max_rows):
+
+        session_df = result[result['session_end_date'] == day]
+        ticker = get_ticker(symbol, date.fromisoformat(day))
+
+        if (session_df.empty or session_df.shape[0] < max_rows):
             params = { 
-                    "ticker": df['ticker'].iloc[0],
+                    "ticker": ticker,
                     "resolution": resolution,
                     "sort": 'window_start.desc',
                     "limit": 1000,
                     "window_start_gte": start.isoformat(),
                     "window_start_lt": end.isoformat()
             }
-            refetched.extend(fetch_data(massive_client, params))
+            refetched_df = pd.DataFrame.from_records(vars(d) for d in fetch_data(massive_client, params))
 
-    refetched_df = pd.DataFrame.from_records(vars(d) for d in refetched)
+            # # Dropping sessions that are not complete.
+            # if refetched_df.shape[0] < max_rows:
+            #     warnings.warning(f"Incomplete session for {day}. Excluding session from training data.")
+            #     continue
+
+            refetched.append(refetched_df)
+
+    refetched_df = pd.concat(refetched, ignore_index=True)
 
     result = (
         pd.concat([result, refetched_df], ignore_index=True)
@@ -259,6 +264,7 @@ def load_prior_data(
 
     assert data_dir is not None, "data_dir must be provided when train=False"
 
+    data_dir /= f"{symbol}-{resolution}"
     if not data_dir.is_dir():
         return pd.DataFrame()
 
@@ -453,3 +459,4 @@ def fetch_ticker_expiration(ticker: str, client: RESTClient) -> date:
     if contract.last_trade_date is None:
         raise ValueError(f"last_trade_date is missing.")
     return date.fromisoformat(contract.last_trade_date)
+

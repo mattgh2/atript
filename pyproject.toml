@@ -19,11 +19,10 @@ dependencies = [
     "pydantic",
     "autogluon.timeseries",
     "tomlkit",
-    "transformers"
+    "transformers",
     "torch>=2.8",
     "torchvision",
     "torchaudio"
-
 ]
 [project.scripts]
 atript = "futures_pipeline.__main__:main"

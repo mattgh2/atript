@@ -10,8 +10,18 @@ import re
 from tqdm import tqdm
 import pandas_market_calendars as mcal
 from logging import Logger
+from calendar import Month
 
 logger = Logger(name='log', level=2)
+
+leading_months: dict[Month, tuple[Month, str]] = {
+    Month.JANUARY: (Month.MARCH, "H"), Month.FEBRUARY: (Month.MARCH, "H"),
+    Month.MARCH: (Month.MARCH, "H"), Month.APRIL: (Month.JUNE, "M"),
+    Month.MAY: (Month.JUNE, "M"), Month.JUNE: (Month.JUNE, "M"),
+    Month.JULY: (Month.SEPTEMBER, "U"), Month.AUGUST: (Month.SEPTEMBER, "U"),
+    Month.SEPTEMBER: (Month.SEPTEMBER, "U"), Month.OCTOBER: (Month.DECEMBER, "Z"),
+    Month.NOVEMBER: (Month.DECEMBER, "Z"), Month.DECEMBER: (Month.DECEMBER, "Z"),
+}
 
 def session_bounds(first: date, last: date) -> tuple[datetime, datetime]:
     chicago = ZoneInfo("America/Chicago")
@@ -50,10 +60,13 @@ Returns the market open and close timestamps for each session in [begin, end].
 """
 def fetch_session_dates(
     contract: str, 
-    client: RESTClient, 
     begin: str, 
-    end: str
-) -> dict[str, list[pd.Timestamp]]:
+    end: str,
+    client: RESTClient | None = None
+) -> dict[Hashable, list[pd.Timestamp]]:
+
+    if client is None:
+        client = create_massive_client(load_settings().massive_api_key)
 
     schedules = client.list_futures_schedules(
         product_code=contract,
@@ -146,7 +159,12 @@ def cme_session_dates_fallback(
 
     return schedule
 
-def fetch_session_hours(product: str, begin: str, end: str, client: RESTClient | None = None) -> dict[str, list]:
+def fetch_session_hours(
+        product: str, 
+        begin: str, 
+        end: str, 
+        client: RESTClient | None = None
+) -> dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]:
     if client is None:
         client = create_massive_client(load_settings().massive_api_key)
 
@@ -198,7 +216,7 @@ def fetch_session_hours(product: str, begin: str, end: str, client: RESTClient |
             ['session_end_date', 'timestamp', 'event']
     )
 
-    session_trading_hours = defaultdict(list)
+    session_trading_hours: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = defaultdict(list)
     for end_date, d in df.groupby("session_end_date")[['timestamp', 'event']]:
         s: pd.Series = d.sort_values('timestamp').set_index('event')['timestamp']
         opened_at = None
@@ -213,13 +231,12 @@ def fetch_session_hours(product: str, begin: str, end: str, client: RESTClient |
             elif event in ('pre_open', 'close') and opened_at is not None:
                 if timestamp <= opened_at:
                     raise ValueError(f"Invalid trading interval for {end_date}.")
-                session_trading_hours[end_date].append([opened_at, timestamp])
+                session_trading_hours[str(end_date)].append((opened_at, timestamp))
                 opened_at = None
 
         if opened_at is not None:
             raise ValueError(f"Session {end_date} has an unmatched opening.")
     return session_trading_hours
-
 
 
 def get_product_code(symbol: str):
@@ -274,3 +291,22 @@ def get_missing_sessions(non_missing: list[str], start_date: str, end_date: str)
         )
 
     return pd.concat(missing_schedules, ignore_index=True)
+
+
+""" Get the leading ticker for specified date. """
+def get_ticker(product: str, session_date: date):
+
+        year = session_date.year
+        expr_month, month_code =  leading_months[Month(session_date.month)]
+
+        # Rollover begins at 17:00 CT the day before the roll date.
+        if session_date >= mes_roll_date(year, expr_month):
+            if expr_month == 12:
+                month_code = 'H'
+                year += 1
+            else:
+                _, month_code = leading_months[Month(expr_month + 1)]
+
+        ticker = "".join((product, month_code, str(year % 10)))
+
+        return ticker
