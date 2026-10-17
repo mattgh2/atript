@@ -122,9 +122,7 @@ def build_training_input(train_df, covariates: list[str], pred_length) -> list:
     for ticker, contract_df in train_df.groupby('ticker', sort=False):
 
         # Ensure sorted by ascending timestamp and drop examples with missing labels.
-        contract_df = contract_df.sort_values("real_timestamp").reset_index(drop=True).dropna(
-            subset=['close']
-        )
+        contract_df = contract_df.sort_values("real_timestamp").reset_index(drop=True)
 
         # Needs at least pred_length historical examples.
         if contract_df.shape[0] < 2 * pred_length:

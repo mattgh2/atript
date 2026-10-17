@@ -230,18 +230,6 @@ def fetch_training_set(
     return result
 
 
-"""
-Loads stored data from disk from a range of dates
-
-@param ticker The ticker to retreive.
-@param begin The first trading day  to retrieve.
-@param end The last trading day  to retrieve.
-
-@note If end is omited, the function will return all data 
-      from the start date through the most recent stored trading day.
-      If begin is omited, the function will return all data from 
-      the least recent trading day to specified end date.
-"""
 def load_train(symbol: str, resolution: str):
     data_path: Path = TRAINING_DATA_DIR / f"{symbol}-{resolution}" / f"{symbol}-{resolution}-train.parquet"
     data = pd.read_parquet(data_path)
@@ -250,6 +238,18 @@ def load_train(symbol: str, resolution: str):
     return data
 
 
+"""
+Loads stored data from disk from a range of dates
+
+@param ticker The ticker to retreive.
+@param begin The first trading day  to retrieve.
+@param end The last trading day  to retrieve.
+
+@note If end is ommited, the function will return all data 
+      from the start date through the most recent stored trading day.
+      If begin is omited, the function will return all data from 
+      the least recent trading day to specified end date.
+"""
 def load_prior_data(
         symbol: str, 
         resolution: str, 
@@ -258,6 +258,7 @@ def load_prior_data(
         data_dir: Path | None = None, 
         train: bool = False
 ) -> pd.DataFrame:
+    breakpoint()
 
     if train:
         return load_train(symbol, resolution)
