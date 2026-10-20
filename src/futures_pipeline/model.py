@@ -1,7 +1,7 @@
 import pandas as pd  # requires: pip install 'pandas[pyarrow]'
 from pathlib import Path
 from chronos import Chronos2Pipeline
-from .config import PROCESSED_DATA_DIR, TRAINING_DATA_DIR, MODEL_DIR
+from .config import PROCESSED_DATA_DIR, TRAINING_DATA_DIR, MODEL_DIR, FIGURE_PATH, PROJECT_ROOT
 from .typedefs import EvaluationResult, TradingFees, ContractSpec, Signal, PredictionInterval, BacktestResults
 from .datareader import load_prior_data, fetch_contract_spec
 from .datareader.readerutil import get_product_code
@@ -11,15 +11,19 @@ import matplotlib.pyplot as plt
 from .config import load_fees
 from datetime import timedelta
 from transformers import EarlyStoppingCallback
-from typing import NamedTuple
+from typing import NamedTuple, cast
 from tqdm import tqdm
-from .figs import plot_predictions
+from .figs import plot_predictions, parameter_performance, display_figs
+from logging import Logger
+
+Log = Logger(name='log', level=1)
 
 TREND = ['EMA', 'SMA', 'DMA', 'T3MA']
 MOMENTUM = ["RSI", 'FSO', 'SSO', 'ROC', 'CCI']
 VOLATILITY = ["VR", "ATR", "percent_b"]
 VOLUME = ["volume", "VWAP"]
 TIME = ['has_time_gap', 'log_elapsed_intervals']
+MISSING = ['follows_missing', 'was_missing']
 
 # VOLATILITY = [
 #     "VR",
@@ -67,7 +71,8 @@ def load_and_split_training_set(
 
     train_df['session_end_date'] = pd.to_datetime(train_df['session_end_date'])
 
-    # Hold out the final contract for evaluation.
+    # Hold out the final contract for evaluation. 
+    # The routine to fetch training data ensures that the final contract is complete (ends on a roll-over).
     final_contract = train_df.loc[
         train_df["session_end_date"].eq(train_df["session_end_date"].max()), "ticker"
     ].iloc[0]
@@ -107,7 +112,7 @@ def load_history(ticker: str, resolution: str) -> pd.DataFrame:
     history_df: pd.DataFrame = load_prior_data(
         ticker, 
         resolution,
-        data_dir=PROCESSED_DATA_DIR / f"{ticker}-{resolution}", 
+        data_dir=PROCESSED_DATA_DIR, 
     )
     if history_df.empty:
         raise RuntimeError("Missing context set.")
@@ -156,27 +161,34 @@ def build_validation_input(
     """ Note: A validation item results in a single forecast window. 
               Need to futher split each item into multiple validation windows."""              
 
-    min_origins = float("inf")
-    val = []
-    contract_items = {}
-    for ticker, contract_df in val_df.groupby('ticker', sort=False):
+    """ Note: Forecast windows containing nan should be dropped. """
 
-        # Ensure sorted by ascending timestamp and drop examples with missing labels.
-        contract_df = contract_df.sort_values("real_timestamp").reset_index(drop=True).dropna(
-            subset=['close']
-        )
+    val = []
+    contract_items: dict[str, list[dict]] = {}
+    for ticker, contract_df in val_df.groupby('ticker', sort=False):
+        ticker = cast(str, ticker)
+        # Ensure sorted by ascending timestamp.
+        contract_df = contract_df.sort_values("real_timestamp").reset_index(drop=True)
 
         # Min amount of examples for validation.
         if contract_df.shape[0] < context_length + pred_length:
+            Log.warning(f"ticker is not large enough for validation.")
             continue
 
-        # Overlap historical context with nonoverlapping prediction windows. 
+        # Overlap historical context with nonoverlapping prediction windows.
         # Start at the end to prioritize the most recent data.
-        forecast_origins = np.arange(len(contract_df) - pred_length, context_length - 1, -pred_length)[::-1]
-        min_origins = min(min_origins, len(forecast_origins))
+        forecast_origins = np.arange(
+            len(contract_df) - pred_length, context_length - 1, -pred_length
+        )[::-1]
 
         for origin in forecast_origins:
             window = contract_df.iloc[origin - context_length: origin + pred_length]
+
+            # Dont include the window if there are nan's in the prediction rows.
+            # This is interfere with evaluation metrics.
+            if window['close'].tail(pred_length).isna().any():
+                continue
+
             past_covariates = {
                 column: np.array(values)
                 for column, values in window[[*covariates]].to_dict(orient="list").items()
@@ -188,6 +200,11 @@ def build_validation_input(
                     # "future_covariates": {} # TODO: load future time covariates
                 }
             ) 
+
+    if len(contract_items) == 0:
+        raise ValueError(f"No contract has a sufficent length for validation.")
+
+    min_origins = min(len(item) for item in contract_items.values())
 
     # Reduce length of each item set down to min_origins.
     for contract, items in contract_items.items():
@@ -219,7 +236,7 @@ def run_model(
     eval: bool=False
 ) -> None:
 
-    covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME]
+    covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME, *MISSING]
 
     model_dir: Path | None = None
 
@@ -295,21 +312,73 @@ def run_model(
     )
 
     if eval:
-        e = walk_forward_predict(pipeline, 
-            context_df, 
-            pred_length, 
-            pred_length, 
-            context_length, 
-            quantiles
-        )
-        e = e.merge(
-                history_df[['model_timestamp','real_timestamp']],
-                on="model_timestamp",
-                how="inner"
-        )
-        eval_results: EvaluationResult = evaluate(e, quantiles, prediction_interval)
-        report_eval(eval_results)
+        prediction_dfs = []
+        # context_lengths = [2 ** n for n in range(5, 14)]
+        context_lengths = [2 ** n for n in range(5, 8)]
+        for c in context_lengths:
+            e = walk_forward_predict(pipeline, 
+                context_df, 
+                pred_length, 
+                pred_length, 
+                c, 
+                quantiles
+            )
+            e = e.merge(
+                    history_df[['model_timestamp','real_timestamp']],
+                    on="model_timestamp",
+                    how="inner"
+            )
+            e['context_length'] = c
+            prediction_dfs.append(e)
+            # Ensure same n.
 
+        min_len = min(df.shape[0] for df in prediction_dfs)
+
+        scores = []
+        output: dict[str, list] = {}
+        for preds in prediction_dfs:
+            preds = preds[:min_len]
+            current_output = []
+            eval_results: EvaluationResult = evaluate(preds, quantiles, prediction_interval)
+            scores.append(eval_results.mae)
+            current_output.append(f"context length: {preds['context_length'].iloc[0]}")
+            current_output.append(f"directional accuracy: {eval_results.directional_accuracy:.2f}")
+            current_output.append(f"MAE: {eval_results.mae:.2f}")
+            current_output.append(f"MAE improvement over baseline: {eval_results.mae_skill:.2%}")
+            current_output.append(f"PI coverage: {eval_results.pi_coverage:.2%}")
+
+            current_output.append("Quantile calibration:")
+            for q, v in eval_results.quantile_calibration.items():
+                current_output.append(f"\tq={q}: {v}")
+
+
+            current_output.append(f"Calibration Error:")
+            for q, v in eval_results.calibration_error.items():
+                current_output.append(f"\tq={q}: {v}")
+
+            plot_predictions(
+                eval_results.y_pred.head(200),
+                eval_results.y_true.head(200),
+                FIGURE_PATH
+                / f"hyperparam_optimization/inference/{preds['context_length'].iloc[0]}-predictions.png",
+            )
+
+            output[f"{preds['context_length'].iloc[0]}-predictions"] = current_output
+
+        parameter_performance(
+            "Context Length",
+            "MAE",
+            context_lengths,
+            scores,
+            FIGURE_PATH / f"hyperparam_optimization/inference/performance.png",
+        )
+        display_figs(
+                FIGURE_PATH / f"hyperparam_optimization/inference",
+                PROJECT_ROOT / "web/hyperparams.html",
+                output
+        )
+
+        # report_eval(eval_results)
 
     else:
         print(f"Performing walk-forward forecasting")
@@ -484,6 +553,12 @@ def walk_forward_predict(
 
     last = context_df.shape[0] - horizon
     for window_len in tqdm(range(context_length + 1, last + 1, step)):
+
+        '''If any of y_true values in the prediction window are nan, 
+           they need to be excluded from evaluation or they will interfere with evaluation metric.'''
+        if context_df[window_len - 1: window_len + horizon]['close'].isna().any():
+            continue
+
         pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, context_length, quantiles)
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
         pred_df['forecast_origin'] = context_df.iloc[window_len - 1]['model_timestamp']
@@ -824,5 +899,4 @@ def report_eval(eval_results: EvaluationResult) -> None:
     print(f"Nominal coverage: {eval_results.nominal_coverage:.2%}")
     print(f"Mean PI width: {eval_results.mean_interval_width:.8f}")
 
-    plot_predictions(np.arange(len(eval_results.y_pred)), eval_results.y_pred, eval_results.y_true)
-
+    plot_predictions(eval_results.y_pred, eval_results.y_true)
