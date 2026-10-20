@@ -17,6 +17,7 @@ FORECAST_DATA_DIR: Path = DATA_DIR / "forecasts"
 TRAINING_DATA_DIR: Path = DATA_DIR / "training"
 MODEL_DIR: Path = PROJECT_ROOT / "models"
 CONFIG_FILE: Path = PROJECT_ROOT / "config.toml"
+FIGURE_PATH: Path = PROJECT_ROOT / "figures"
 
 
 @dataclass(frozen=True)
