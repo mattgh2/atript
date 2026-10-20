@@ -21,7 +21,7 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     raw_dir: Path | None = None
 
     if not train:
-        raw_dir = RAW_DATA_DIR / f"{symbol}-{resolution}"
+        raw_dir = RAW_DATA_DIR 
 
     data: pd.DataFrame = load_prior_data(symbol, resolution, data_dir=raw_dir, train=train)
 
@@ -72,13 +72,19 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     # Creates rows: log_elapsed_intervals, has_time_gap
     data = get_time_features(data, candle_resolution)
 
-
     # Need this column for fill_missing()
     data['missing_prev'] = get_missing_gaps(data, symbol, candle_resolution)
     data = fill_missing(data, candle_resolution)
 
     data = data.drop(columns=['missing_prev'],axis=1)
-    data['follows_close'] = get_time_features(data, candle_resolution)
+    data = get_time_features(data, candle_resolution)
+
+    data["prev_was_missing"] = data.groupby('ticker')['was_missing'].shift(-1)
+    data['follows_missing'] = (data['prev_was_missing'].eq(1) & data['was_missing'].eq(0)).astype("int8")
+    data = data.drop(columns=['prev_was_missing'], axis=1)
+
+    # Add a feature for follows_mising_row
+    # 
 
     data = data.set_index("ticker")
 
@@ -108,7 +114,7 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     # Volatility.
     bb = bollinger_bands(data['close'])
     keltner = kc(data)
-    data['rolling_std_20'] = rolling_std(data['returns'], 20)
+    # data['rolling_std_20'] = rolling_std(data['returns'], 20)
     data["percent_b"] = bb.percent_b
     data["upper_b"] = bb.upper_band
     data["lower_b"] = bb.lower_band
@@ -325,12 +331,17 @@ def fill_missing(data: pd.DataFrame, resolution: CandleResolution):
 
     missing_df = pd.DataFrame(missing_rows)
 
+    data['was_missing'] = 0
+
     data = (
         pd.concat([data, missing_df], ignore_index=True)
         .sort_values("real_timestamp", ascending=False)
         .reset_index(drop=True)
     )
-    data['was_missing'] = data['was_missing'].fillna(0)
+
+    data['was_missing'] = data['was_missing'].astype(np.int8)
+    data['has_time_gap'] = data['has_time_gap'].astype(np.int8)
+
     return data
 
 def generate_missing_rows(start, stop, interval_len, session_end_date, ticker):
