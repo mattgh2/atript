@@ -22,10 +22,14 @@ dependencies = [
     "transformers",
     "torch>=2.8",
     "torchvision",
-    "torchaudio"
+    "torchaudio",
+    "dominate"
 ]
 [project.scripts]
 atript = "futures_pipeline.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.basedpyright]
+stubPath = "typings"
