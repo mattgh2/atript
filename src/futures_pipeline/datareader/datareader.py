@@ -184,6 +184,7 @@ def fetch_training_set(
         day = pd.Timestamp(day).strftime("%Y-%m-%d")
 
         # Day is still missing from both massive.com and mcal. Just skip this day.
+        # Drop the day or 
         if not session_dates.get(day) or not session_hours.get(day):
             continue
 
@@ -258,7 +259,6 @@ def load_prior_data(
         data_dir: Path | None = None, 
         train: bool = False
 ) -> pd.DataFrame:
-    breakpoint()
 
     if train:
         return load_train(symbol, resolution)
