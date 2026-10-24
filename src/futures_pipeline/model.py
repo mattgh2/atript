@@ -8,12 +8,13 @@ from .datareader.readerutil import get_product_code
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
-from .config import load_fees
+from .config import load_fees, WEB_PATH
 from datetime import timedelta
 from transformers import EarlyStoppingCallback
 from typing import NamedTuple, cast
 from tqdm import tqdm
-from .figs import plot_predictions, parameter_performance, display_figs
+from .figs import plot_predictions, parameter_performance
+from .web_util import web_scaffolding, display_figs_on_page, update_resolution_page
 from logging import Logger
 
 Log = Logger(name='log', level=1)
@@ -233,7 +234,8 @@ def run_model(
     hf_token=None,
     train: bool = False,
     zero_shot: bool = False,
-    eval: bool=False
+    eval: bool=False,
+    tune: bool = False
 ) -> None:
 
     covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME, *MISSING]
@@ -312,73 +314,33 @@ def run_model(
     )
 
     if eval:
-        prediction_dfs = []
-        # context_lengths = [2 ** n for n in range(5, 14)]
-        context_lengths = [2 ** n for n in range(5, 8)]
-        for c in context_lengths:
-            e = walk_forward_predict(pipeline, 
-                context_df, 
-                pred_length, 
-                pred_length, 
-                c, 
-                quantiles
+        if tune:
+            context_lengths = [2 ** n for n in range(5, 14)]
+            # context_lengths = [2 ** n for n in range(5, 7)]
+            tune_context_length(
+                    pipeline,
+                    context_lengths,
+                    context_df,
+                    history_df,
+                    pred_length,
+                    quantiles,
+                    prediction_interval,
+                    zero_shot,
+                    resolution
             )
-            e = e.merge(
-                    history_df[['model_timestamp','real_timestamp']],
-                    on="model_timestamp",
-                    how="inner"
-            )
-            e['context_length'] = c
-            prediction_dfs.append(e)
-            # Ensure same n.
-
-        min_len = min(df.shape[0] for df in prediction_dfs)
-
-        scores = []
-        output: dict[str, list] = {}
-        for preds in prediction_dfs:
-            preds = preds[:min_len]
-            current_output = []
-            eval_results: EvaluationResult = evaluate(preds, quantiles, prediction_interval)
-            scores.append(eval_results.mae)
-            current_output.append(f"context length: {preds['context_length'].iloc[0]}")
-            current_output.append(f"directional accuracy: {eval_results.directional_accuracy:.2f}")
-            current_output.append(f"MAE: {eval_results.mae:.2f}")
-            current_output.append(f"MAE improvement over baseline: {eval_results.mae_skill:.2%}")
-            current_output.append(f"PI coverage: {eval_results.pi_coverage:.2%}")
-
-            current_output.append("Quantile calibration:")
-            for q, v in eval_results.quantile_calibration.items():
-                current_output.append(f"\tq={q}: {v}")
-
-
-            current_output.append(f"Calibration Error:")
-            for q, v in eval_results.calibration_error.items():
-                current_output.append(f"\tq={q}: {v}")
-
-            plot_predictions(
-                eval_results.y_pred.head(200),
-                eval_results.y_true.head(200),
-                FIGURE_PATH
-                / f"hyperparam_optimization/inference/{preds['context_length'].iloc[0]}-predictions.png",
+        else:
+            eval_results = predict_and_evaluate(
+                    pipeline,
+                    context_df,
+                    history_df,
+                    pred_length,
+                    context_length,
+                    quantiles,
+                    prediction_interval,
             )
 
-            output[f"{preds['context_length'].iloc[0]}-predictions"] = current_output
+            report_eval(eval_results)
 
-        parameter_performance(
-            "Context Length",
-            "MAE",
-            context_lengths,
-            scores,
-            FIGURE_PATH / f"hyperparam_optimization/inference/performance.png",
-        )
-        display_figs(
-                FIGURE_PATH / f"hyperparam_optimization/inference",
-                PROJECT_ROOT / "web/hyperparams.html",
-                output
-        )
-
-        # report_eval(eval_results)
 
     else:
         print(f"Performing walk-forward forecasting")
@@ -548,11 +510,15 @@ def walk_forward_predict(
     horizon: int,
     context_length: int,
     quantiles: list[float],
+    num_windows: int | None = None,
 ) -> pd.DataFrame:
     results: list[pd.DataFrame] = []
 
     last = context_df.shape[0] - horizon
     for window_len in tqdm(range(context_length + 1, last + 1, step)):
+
+        if num_windows is not None and num_windows <= 0:
+            break
 
         '''If any of y_true values in the prediction window are nan, 
            they need to be excluded from evaluation or they will interfere with evaluation metric.'''
@@ -576,6 +542,10 @@ def walk_forward_predict(
                 how="inner",
                 validate="one_to_one"
         ))
+
+        if num_windows is not None:
+            num_windows -= 1
+
     df = pd.concat(results, ignore_index=True)
     return df
 
@@ -708,6 +678,8 @@ def evaluate(
     return EvaluationResult (
         ts_eval['predictions'], 
         ts_eval['close'], 
+        ts_eval[str(prediction_interval.lower)],
+        ts_eval[str(prediction_interval.upper)],
         by_horizon_pf,
         mae, 
         baseline_mae, 
@@ -899,4 +871,164 @@ def report_eval(eval_results: EvaluationResult) -> None:
     print(f"Nominal coverage: {eval_results.nominal_coverage:.2%}")
     print(f"Mean PI width: {eval_results.mean_interval_width:.8f}")
 
-    plot_predictions(eval_results.y_pred, eval_results.y_true)
+    plot_predictions(
+        eval_results.y_pred,
+        eval_results.y_true,
+        eval_results.lower_p,
+        eval_results.upper_p,
+    )
+
+
+def predict_and_evaluate(
+    pipeline,
+    context_df,
+    history_df,
+    pred_length,
+    context_length,
+    quantiles,
+    prediction_interval,
+    num_windows: int | None = None,
+) -> EvaluationResult:
+    e = walk_forward_predict(pipeline, 
+            context_df, 
+            pred_length, 
+            pred_length, 
+            context_length, 
+            quantiles,
+            num_windows
+        )
+    e = e.merge(
+                history_df[['model_timestamp','real_timestamp']],
+                on="model_timestamp",
+                how="inner"
+        )
+    e['context_length'] = context_length
+
+    return evaluate(e, quantiles, prediction_interval)
+
+# Add button for resolution if it does not exist. May require some tree traversal.
+# Can dominate be used to parse html? -- BeautifulSoup
+# parse the list of resolution divs in enclosing div with id="resolutions".
+# html file -> zeroshot_context_lengths.html
+
+# TODO: Remove hardcoding paths.
+def tune_context_length(
+    pipeline: Chronos2Pipeline,
+    param_values: list[int],
+    context_df: pd.DataFrame,
+    history_df: pd.DataFrame,
+    pred_length: int,
+    quantiles: list[float],
+    prediction_interval: PredictionInterval,
+    zero_shot: bool,
+    resolution: str
+) -> None:
+    web_scaffolding()
+    base_path = WEB_PATH / f"hyperparams" / ("zeroshot" if zero_shot else "finetuned")
+    context_length_page = base_path / "context_lengths.html"
+    metrics_page = base_path / "context_length_metrics.html"
+    update_resolution_page(context_length_page, resolution, base_path / resolution / "predictions.html")
+    update_resolution_page(metrics_page, resolution, base_path / resolution / "metrics.html")
+
+    # Ensure the same number of prediction windows are used for each parameter value.
+    num_pred_windows = (context_df.shape[0] - max(param_values)) // pred_length
+
+    mae_scores = []
+    directional_acc = []
+    figs: list[tuple[Path, list[str]]] = []
+
+    fig_path: Path = FIGURE_PATH / f"hyperparam_optimization/inference/"
+    fig_path /= ("zeroshot" if zero_shot else "finetuned") 
+    fig_path /= resolution
+
+    fig_path.mkdir(exist_ok=True, parents=True)
+
+    save_predictions_path: Path = (
+        PROJECT_ROOT / f"web/hyperparams/" / 
+        (f"zeroshot/{resolution}" if zero_shot else f"finetuned/{resolution}")
+    )
+
+    save_predictions_path.mkdir(parents=True, exist_ok=True)
+    save_predictions_file = save_predictions_path / "predictions.html"
+
+    save_metrics_path: Path = (
+            PROJECT_ROOT / f"web/hyperparams" /
+            (f"zeroshot/{resolution}" if zero_shot else f"finetuned/{resolution}")
+    )
+    save_metrics_path.mkdir(parents=True, exist_ok=True)
+    save_metrics_file: Path = save_metrics_path / "metrics.html"
+
+    for context_length in param_values:
+        eval_results: EvaluationResult = predict_and_evaluate(
+            pipeline,
+            context_df,
+            history_df,
+            pred_length,
+            context_length,
+            quantiles,
+            prediction_interval,
+            num_pred_windows,
+        )
+
+        current_output: list[str] = []
+
+        mae_scores.append(eval_results.mae)
+        directional_acc.append(eval_results.directional_accuracy)
+
+        current_output.append(f"context length: {context_length}")
+        current_output.append(
+            f"directional accuracy: {eval_results.directional_accuracy:.2f}"
+        )
+        current_output.append(f"MAE: {eval_results.mae:.2f}")
+        current_output.append(
+            f"MAE improvement over baseline: {eval_results.mae_skill:.2%}"
+        )
+        current_output.append(f"PI coverage: {eval_results.pi_coverage:.2%}")
+        current_output.append(f"Mean interval width: {eval_results.mean_interval_width}")
+
+        current_output.append("Quantile calibration:")
+        for q, v in eval_results.quantile_calibration.items():
+            current_output.append(f"\tq={q}: {v}")
+
+        current_output.append(f"Calibration Error:")
+        for q, v in eval_results.calibration_error.items():
+            current_output.append(f"\tq={q}: {v}")
+
+        current_fig_path = fig_path / f"{context_length}-predictions.png"
+
+        plot_predictions(
+            eval_results.y_pred.head(200),
+            eval_results.y_true.head(200),
+            eval_results.lower_p.head(200),
+            eval_results.upper_p.head(200),
+            current_fig_path,
+        )
+
+        figs.append((current_fig_path, current_output))
+
+    mae_perf_path = fig_path / "mae-performance.png"
+    parameter_performance(
+            "Context Length",
+            "MAE",
+            param_values,
+            mae_scores,
+            mae_perf_path
+        )
+
+    dir_acc_perf_path = fig_path / "directional-performance.png"
+    parameter_performance(
+            "Context Length",
+            "Directional Accuracy",
+            param_values,
+            directional_acc,
+            dir_acc_perf_path
+        )
+    display_figs_on_page(
+                figs,
+                save_predictions_file
+        )
+
+    display_figs_on_page(
+            [(mae_perf_path, []), (dir_acc_perf_path, [])],
+            save_metrics_file
+        )
