@@ -23,7 +23,8 @@ dependencies = [
     "torch>=2.8",
     "torchvision",
     "torchaudio",
-    "dominate"
+    "dominate",
+    "beautifulsoup4"
 ]
 [project.scripts]
 atript = "futures_pipeline.__main__:main"
