@@ -111,7 +111,9 @@ def atr(data: pd.DataFrame, period: int = 14) -> pd.Series:
             continue
         current = data.iloc[positions].copy()
         current['TTR'] = ttr(current)
-        output[positions] = smoothing_average(current['TTR'], alpha=1 / period, period=period, init='sma')
+        output[positions] = smoothing_average(
+            current["TTR"], alpha=1 / period, period=period, init="sma"
+        )
 
     return pd.Series(output, index=data.index, name='atr')
 

@@ -17,6 +17,7 @@ def smoothing_average(
 ) -> pd.Series:
     if init not in ("first", "sma"):
         raise ValueError("init must be 'first' or 'sma'")
+
     if not 0 < alpha <= 1:
         raise ValueError("alpha must be in (0, 1]")
     if len(prices) < period or period <= 0:
@@ -31,15 +32,33 @@ def smoothing_average(
 
         avg = np.full(len(price), np.nan)
 
-        if init == 'first':
-            seed = len(price) - 1
-            avg[seed] = price.iloc[seed]
-        elif init == 'sma':
-            seed = len(price) - period
-            avg[seed] = price.iloc[seed:].mean()
+        # Prices are newest-to-oldest. Process each finite contiguous segment
+        # independently so a missing observation does not contaminate newer data.
+        segment_end = len(price) - 1
+        while segment_end >= 0:
+            while segment_end >= 0 and pd.isna(price.iloc[segment_end]):
+                segment_end -= 1
+            if segment_end < 0:
+                break
 
-        for i in range(seed, 0, -1): 
-            avg[i - 1] = alpha * price.iloc[i - 1] + (1-alpha) * avg[i]
+            segment_start = segment_end
+            while segment_start > 0 and pd.notna(price.iloc[segment_start - 1]):
+                segment_start -= 1
+
+            if init == 'first':
+                seed = segment_end
+                avg[seed] = price.iloc[seed]
+            else:
+                if segment_end - segment_start + 1 < period:
+                    segment_end = segment_start - 1
+                    continue
+                seed = segment_end - period + 1
+                avg[seed] = price.iloc[seed : segment_end + 1].mean()
+
+            for i in range(seed - 1, segment_start - 1, -1):
+                avg[i] = alpha * price.iloc[i] + (1 - alpha) * avg[i + 1]
+
+            segment_end = segment_start - 1
 
         output[positions] = avg
 

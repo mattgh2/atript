@@ -28,10 +28,19 @@ def sma(prices: pd.Series, p: int = 20) -> pd.Series:
         sma: np.ndarray = np.full(n, np.nan)
 
         k: int = n - p
-        sma[k] = np.sum(price.iloc[k : k + p]) / p
+        window = price.iloc[k:k + p]
+        if not window.isna().any():
+            sma[k] = np.sum(window) / p
 
         for i in range(k, 0, -1):
-            sma[i - 1] = sma[i] + 1 / p * (price.iloc[i - 1] - price.iloc[i - 1 + p])
+            if np.isnan(sma[i]):
+                window = price.iloc[i - 1: i - 1 + p]
+                if not window.isna().any():
+                    sma[i - 1] = np.sum(window) / p
+            else:
+                sma[i - 1] = sma[i] + 1 / p * (
+                    price.iloc[i - 1] - price.iloc[i - 1 + p]
+                )
 
         output[positions] = sma
 
@@ -69,9 +78,8 @@ def wma(prices: pd.Series, period: int = 14) -> pd.Series:
     return pd.Series(output, index=prices.index, name="wma")
 
 
-
 def ema(prices: pd.Series, period: int = 15):
-    return smoothing_average(prices, 2 / (period + 1), period).rename("ema")
+    return smoothing_average(prices, 2 / (period + 1), period, init='sma').rename("ema")
 
 def t3ma(closes: pd.Series, alpha: float = .7, period: int = 15):
     output: np.ndarray = np.full(len(closes), np.nan)
@@ -103,4 +111,3 @@ def dma(
         .shift(-displacement)
         .rename("dma")
     )
-
