@@ -2,20 +2,30 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import numpy as np
 import dominate 
-from dominate.tags import div, img, body, h1, link, p
-from typing import cast
+from dominate.tags import div, img, body, h1, link, p, a
+from typing import Optional
 from .config import PROJECT_ROOT
 from datetime import datetime
+from collections.abc import Iterable
 
-def plot_predictions(y_pred, y_true, save_to: Path | None = None):
-    days = np.arange(1, len(y_pred) + 1)
+def plot_predictions(y_pred, y_true, lower_p, upper_p, save_to: Path | None = None):
+    candles = np.arange(1, len(y_pred) + 1)
     fig, ax = plt.subplots(layout="constrained")
-    ax.plot(days, y_pred, label="Predicted", color="black")
-    ax.plot(days, y_true, label="Actual", color="red")
+    ax.plot(candles, y_pred, label="Predicted", color="black")
+    ax.plot(candles, y_true, label="Actual", color="red")
+
+    ax.fill_between(
+            candles,
+            lower_p,
+            upper_p,
+            alpha=0.7,
+            label="Prediction interval",
+            color="xkcd:light lavender"
+    )
 
     ax.set(
             title="Actual vs. Predicted",
-            xlabel="days",
+            xlabel="candles",
             ylabel="price"
     )
 
@@ -49,30 +59,28 @@ def parameter_performance(
 """
 Writes a directory of figures to html.
 
-@param fig_path The pathname for the directory of figs.
+@param fig_path
 @param page_path the pathname where the html file is located.
-@param text Optional text to display alongside a figure. 
 """
-def display_figs(fig_path: Path, page_path: Path, text: dict[str, list] | None = None):
+def display_figs(figs: list[tuple[Path, list[str]]], page_path: Path):
+    page_path.touch(exist_ok=True)
     last_update = datetime.today()
     doc: dominate.document = dominate.document(title="foo")
     with doc.head:
-        link(rel="stylesheet", href="src/output.css")
+        link(rel="stylesheet", href="../../src/output.css")
     with doc:
-        with div(f"last_update: {str(last_update)}"):
-            ...
+        with div():
+            with a("Back", href="../../../main.html"): ...
+        with div(f"last_update: {str(last_update)}"): ...
         with div(id='images', cls="flex flex-wrap"):
-            for fig in fig_path.iterdir():
-                if fig.suffix == ".png":
-                    with div(id=f"{fig.stem}-cnt", cls="flex flex-col items-center"):
-                        with div(id=fig.stem):
-                            img(src=fig.resolve())
-                        if text and text.get(fig.stem):
-                            with div(id=f"{fig.name}-text"):
-                                for item in text[fig.stem]:
-                                    p(item)
-
-                            
+            for fig, text in figs:
+                with div(id=f"{fig.stem}-cnt", cls="flex flex-col items-center"):
+                    with div(id=fig.stem):
+                        img(src=fig.resolve())
+                    if len(text):
+                        with div(id=f"{fig.name}-text"):
+                            for item in text:
+                                p(item)
 
 
     with open(page_path, 'w') as f:
