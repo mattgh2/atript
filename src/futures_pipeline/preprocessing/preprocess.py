@@ -2,7 +2,7 @@ import pandas as pd
 from ..datareader import load_prior_data
 from ..datareader.readerutil import fetch_session_hours, get_product_code, fetch_session_dates
 from pathlib import Path
-from ..config import PROCESSED_DATA_DIR, RAW_DATA_DIR, TRAINING_DATA_DIR
+from ..config import PROCESSED_DATA_DIR, RAW_DATA_DIR, TRAINING_DATA_DIR, WEB_PATH
 from ..typedefs import CandleResolution
 import numpy as np
 from .indicators.momentum import smoothed_rsi, RoC, fast_k, slow_k, cci
@@ -11,7 +11,6 @@ from .indicators.volatility import bollinger_bands, rolling_std, atr, vr, kc
 from .indicators.volume import vwap
 from .preproc_util import get_returns
 from datetime import timedelta, datetime, date, time
-import pudb
 
 def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
@@ -60,7 +59,7 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     data = data.drop(['window_start'], axis=1)
 
     data = (
-        data.drop_duplicates(subset=["real_timestamp"])
+        data.drop_duplicates(subset=['ticker', "real_timestamp"])
         .sort_values("real_timestamp", ascending=False, kind="stable")
         .reset_index(drop=True)
     )
@@ -76,15 +75,47 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     data['missing_prev'] = get_missing_gaps(data, symbol, candle_resolution)
     data = fill_missing(data, candle_resolution)
 
-    data = data.drop(columns=['missing_prev'],axis=1)
+    data = data.drop(columns=['missing_prev'], axis=1)
     data = get_time_features(data, candle_resolution)
+    
+    data["_session_key"] = pd.to_datetime(
+        data["session_end_date"]
+    ).dt.strftime("%Y-%m-%d")
+    
+    session_audit = audit_session_coverage(
+        data,
+        get_product_code(symbol),
+        candle_resolution,
+    )
+    with open(WEB_PATH / f"audit.html", 'w') as fp:
+        fp.write(str(session_audit))
 
+    # A first/last session of a contract cannot be reliably padded on its
+    # unobserved outer side. Keep it as context/training data, but do not
+    # score its targets when the source session was incomplete.
+    is_contract_edge_session = (
+        data.groupby("ticker")["_session_key"]
+        .transform(lambda sessions: sessions.eq(sessions.min()) | sessions.eq(sessions.max()))
+    )
+
+    data = data.merge(
+        session_audit,
+        on=["ticker", "_session_key"],
+        how="left",
+        validate="many_to_one",
+    )
+    
+    data["eval_target_ok"] = (
+        data["was_missing"].eq(0) & ~(is_contract_edge_session & ~data["session_complete"])
+    ).astype("int8")
+    
+    data = data.drop(columns=["_session_key"])
+    
     data["prev_was_missing"] = data.groupby('ticker')['was_missing'].shift(-1)
     data['follows_missing'] = (data['prev_was_missing'].eq(1) & data['was_missing'].eq(0)).astype("int8")
     data = data.drop(columns=['prev_was_missing'], axis=1)
 
     # Add a feature for follows_mising_row
-    # 
 
     data = data.set_index("ticker")
 
@@ -155,7 +186,7 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
         prior: pd.DataFrame = load_prior_data(symbol, resolution, day, day, processed_path)
         if not prior.empty:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
-                subset="real_timestamp"
+                subset=['ticker', "real_timestamp"]
             )
         rows = rows.sort_values(
             "real_timestamp", ascending=False, kind="stable"
@@ -276,12 +307,14 @@ def fill_missing(data: pd.DataFrame, resolution: CandleResolution):
             prev_timestamp = pd.Timestamp(row['prev_timestamp'])
             current_timestamp = pd.Timestamp(row['real_timestamp'])
 
+            product_code = get_product_code(row['ticker'])
             _, prev_session_close = fetch_session_dates(
-                row["ticker"], row["prev_session"], row["prev_session"]
+                product_code, row['prev_session'], row["prev_session"]
             )[row["prev_session"]]
 
+            # Need to pass a product_code
             current_session_open, current_session_close = fetch_session_dates(
-                row["ticker"], row["session_end_date"], row["session_end_date"]
+                product_code, row["session_end_date"], row["session_end_date"]
             )[row["session_end_date"]]
 
 
@@ -362,3 +395,94 @@ def generate_missing_rows(start, stop, interval_len, session_end_date, ticker):
         )
         missing_rows.append(missing_row)
     return missing_rows
+
+
+def audit_session_coverage(
+    data: pd.DataFrame,
+    product_code: str,
+    resolution: CandleResolution,
+) -> pd.DataFrame:
+    """Return observed/synthetic coverage for each ticker/session."""
+    interval = pd.Timedelta(
+        resolution.length,
+        unit=resolution.to_timedelta_unit(),
+    )
+
+    work = data.copy()
+    work["_session_key"] = pd.to_datetime(
+        work["session_end_date"]
+    ).dt.strftime("%Y-%m-%d")
+
+    session_hours = fetch_session_hours(
+        product_code,
+        work["_session_key"].min(),
+        work["_session_key"].max(),
+    )
+
+    audit_rows: list[dict] = []
+
+    for (ticker, session_key), group in work.groupby(
+        ["ticker", "_session_key"],
+        sort=False,
+    ):
+        intervals = session_hours.get(str(session_key))
+        if not intervals:
+            audit_rows.append(
+                {
+                    "ticker": ticker,
+                    "_session_key": session_key,
+                    "expected_bars": np.nan,
+                    "observed_bars": np.nan,
+                    "synthetic_bars": np.nan,
+                    "unrepresented_bars": np.nan,
+                    "session_complete": False,
+                    "session_covered": False,
+                }
+            )
+            continue
+
+        expected = pd.DatetimeIndex(
+            np.concatenate(
+                [
+                    pd.date_range(
+                        start=opened_at,
+                        end=closed_at,
+                        freq=interval,
+                        inclusive="left",
+                    ).to_numpy()
+                    for opened_at, closed_at in intervals
+                ]
+            )
+        )
+
+        observed_timestamps = group.loc[
+            group["was_missing"].eq(0),
+            "real_timestamp",
+        ]
+        synthetic_timestamps = group.loc[
+            group["was_missing"].eq(1),
+            "real_timestamp",
+        ]
+
+        observed = observed_timestamps.isin(expected).sum()
+        synthetic = synthetic_timestamps.isin(expected).sum()
+        represented = pd.Index(
+            pd.concat([observed_timestamps, synthetic_timestamps]).unique()
+        ).isin(expected).sum()
+
+        audit_rows.append(
+            {
+                "ticker": ticker,
+                "_session_key": session_key,
+                "expected_bars": len(expected),
+                "observed_bars": observed,
+                "synthetic_bars": synthetic,
+                "unrepresented_bars": len(expected) - represented,
+                # Strict source-data completeness:
+                "session_complete": observed == len(expected),
+                # The padded series represents every expected bar:
+                "session_covered": represented == len(expected),
+            }
+        )
+
+    return pd.DataFrame(audit_rows)
