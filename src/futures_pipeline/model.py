@@ -50,8 +50,7 @@ def load_and_split_training_set(
     train_size: float, 
     symbol: str, 
     resolution: str, 
-    context_length: int,
-    pred_length: int
+    context_length: int, pred_length: int
 ) -> TrainTestValidate:
 
     if not 0 < train_size < 1:
@@ -283,7 +282,7 @@ def run_model(
             store_weights=store_weights
         )
 
-        timestamps = test_df[['model_timestamp', 'real_timestamp']]
+        timestamps = test_df[['model_timestamp', 'real_timestamp', 'ticker']]
         test_df = test_df[['model_timestamp', 'ticker', 'close', *covariates]]
 
         e = walk_forward_predict(
@@ -297,7 +296,7 @@ def run_model(
 
         e = e.merge(
                 timestamps,
-                on="model_timestamp",
+                on=['ticker', "model_timestamp"],
                 how="inner"
         )
 
@@ -309,11 +308,13 @@ def run_model(
 
     context_df = (
         history_df[["model_timestamp", "ticker", "close", *covariates]]
-        .sort_values("model_timestamp")
+        .sort_values(['ticker', "model_timestamp"])
         .reset_index(drop=True)
     )
 
+
     if eval:
+        context_df['eval_target_ok'] = history_df['eval_target_ok']
         if tune:
             context_lengths = [2 ** n for n in range(5, 14)]
             # context_lengths = [2 ** n for n in range(5, 7)]
@@ -411,7 +412,9 @@ def load_chronos(
     model_dir: Path | None,
     hf_token: str | None = None,
 ) -> Chronos2Pipeline:
-    if model_dir and model_dir.exists():
+    if model_dir and not model_dir.exists():
+        raise ValueError(f"{model_dir} does not exist.")
+    if model_dir:
         try: 
             return Chronos2Pipeline.from_pretrained(
                 model_dir, device_map="cuda", local_files_only=True
@@ -512,6 +515,9 @@ def walk_forward_predict(
     quantiles: list[float],
     num_windows: int | None = None,
 ) -> pd.DataFrame:
+
+    if context_df['ticker'].nunique() != 1:
+        raise ValueError("Walk-forward prediction requires exactly one ticker.")
     results: list[pd.DataFrame] = []
 
     last = context_df.shape[0] - horizon
@@ -520,25 +526,38 @@ def walk_forward_predict(
         if num_windows is not None and num_windows <= 0:
             break
 
+        label_rows = context_df.iloc[window_len : window_len + horizon]
+
         '''If any of y_true values in the prediction window are nan, 
            they need to be excluded from evaluation or they will interfere with evaluation metric.'''
-        if context_df[window_len - 1: window_len + horizon]['close'].isna().any():
+        if (
+            label_rows["close"].isna().any()
+            or not label_rows["eval_target_ok"].eq(1).all()
+        ):
             continue
 
-        pred_df = predict_chronos(pipeline, context_df[: window_len], horizon, context_length, quantiles)
+        model_context = context_df.iloc[:window_len].drop(
+                columns=["eval_target_ok"],
+                errors="ignore",
+        )
+
+        pred_df = predict_chronos(
+            pipeline, model_context[:window_len], horizon, context_length, quantiles
+        )
+
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
-        pred_df['forecast_origin'] = context_df.iloc[window_len - 1]['model_timestamp']
-        pred_df['origin_close'] = context_df.iloc[window_len - 1]['close']
+        pred_df['forecast_origin'] = model_context.iloc[window_len - 1]['model_timestamp']
+        pred_df['origin_close'] = model_context.iloc[window_len - 1]['close']
 
         # Compute each quantiles baseline value for the current context window. (historical quantile)
         for quantile in quantiles:
             baseline_value = pred_df['origin_close']
             pred_df[f"baseline_{quantile:g}"] = baseline_value
 
-        eval_df = context_df[['ticker','model_timestamp', 'close']].iloc[window_len: window_len + horizon]
+        eval_df = model_context[['ticker','model_timestamp', 'close']].iloc[window_len: window_len + horizon]
         results.append(pred_df.merge(
                 eval_df,
-                on=['ticker','model_timestamp'],
+                on=['ticker', 'model_timestamp'],
                 how="inner",
                 validate="one_to_one"
         ))
@@ -898,8 +917,8 @@ def predict_and_evaluate(
             num_windows
         )
     e = e.merge(
-                history_df[['model_timestamp','real_timestamp']],
-                on="model_timestamp",
+                history_df[['model_timestamp','real_timestamp', 'ticker']],
+                on=['ticker', "model_timestamp"],
                 how="inner"
         )
     e['context_length'] = context_length
