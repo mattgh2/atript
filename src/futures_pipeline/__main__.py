@@ -65,7 +65,6 @@ def main():
 
         case ModelArgs():
             hf_token = settings.hf_token
-            contract_spec = fetch_contract_spec(args.symbol, create_massive_client(settings.massive_api_key))
             pred_interval: PredictionInterval = PredictionInterval.model_validate(
                 {
                     "lower": args.prediction_interval[0],
@@ -79,7 +78,6 @@ def main():
                     args.context_length,
                     args.quantiles,
                     pred_interval,
-                    contract_spec,
                     hf_token=hf_token, 
                     train=args.train,
                     zero_shot=args.zero_shot,

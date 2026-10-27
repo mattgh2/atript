@@ -228,7 +228,6 @@ def run_model(
     context_length,
     quantiles,
     prediction_interval: PredictionInterval,
-    contract_spec: ContractSpec,
     store_weights: bool,
     hf_token=None,
     train: bool = False,
@@ -345,6 +344,7 @@ def run_model(
 
     else:
         print(f"Performing walk-forward forecasting")
+        contract_spec: ContractSpec = fetch_contract_spec(ticker)
         forecasts = walk_forward_predict(
             pipeline,
             context_df,
@@ -542,7 +542,7 @@ def walk_forward_predict(
         )
 
         pred_df = predict_chronos(
-            pipeline, model_context[:window_len], horizon, context_length, quantiles
+            pipeline, model_context, horizon, context_length, quantiles
         )
 
         pred_df["horizon"] = np.arange(1, len(pred_df) + 1)
@@ -554,7 +554,7 @@ def walk_forward_predict(
             baseline_value = pred_df['origin_close']
             pred_df[f"baseline_{quantile:g}"] = baseline_value
 
-        eval_df = model_context[['ticker','model_timestamp', 'close']].iloc[window_len: window_len + horizon]
+        eval_df = context_df[['ticker','model_timestamp', 'close']].iloc[window_len: window_len + horizon]
         results.append(pred_df.merge(
                 eval_df,
                 on=['ticker', 'model_timestamp'],

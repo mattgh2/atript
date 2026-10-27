@@ -7,7 +7,8 @@ import pandas as pd
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
-from ..config import RAW_DATA_DIR, TRAINING_DATA_DIR
+from ..config import RAW_DATA_DIR, TRAINING_DATA_DIR, load_settings
+from ..massive_client import create_massive_client
 from typing import cast, Hashable
 from collections import defaultdict
 from ..typedefs import CandleResolution
@@ -50,8 +51,13 @@ def fetch_data(
     yield from data
 
 
-def fetch_contract_spec(ticker: str, client: RESTClient) -> ContractSpec:
-    contract: FuturesContract | None = cast(FuturesContract | None, next(client.list_futures_contracts(
+def fetch_contract_spec(ticker: str, client: RESTClient | None = None) -> ContractSpec:
+
+    if client is None:
+        client = create_massive_client(load_settings().massive_api_key)
+
+    rest_client: RESTClient = client
+    contract: FuturesContract | None = cast(FuturesContract | None, next(rest_client.list_futures_contracts(
         ticker=ticker, limit=1
     ), None))
 
@@ -62,7 +68,7 @@ def fetch_contract_spec(ticker: str, client: RESTClient) -> ContractSpec:
 
     product: FuturesProduct | None = cast(
         FuturesProduct | None,
-        next(client.list_futures_products(product_code=product_code, limit=1, raw=False), None),
+        next(rest_client.list_futures_products(product_code=product_code, limit=1, raw=False), None),
     )
 
     if product is None:
