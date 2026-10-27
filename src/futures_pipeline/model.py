@@ -58,10 +58,11 @@ def load_and_split_training_set(
 
     product_code = get_product_code(symbol)
 
+    breakpoint()
     train_df: pd.DataFrame = load_prior_data(
         symbol=product_code, 
         resolution=resolution,
-        data_dir = PROCESSED_DATA_DIR / f"{product_code}-{resolution}"
+        data_dir = PROCESSED_DATA_DIR
     )
 
     if train_df.empty:
@@ -282,7 +283,7 @@ def run_model(
         )
 
         timestamps = test_df[['model_timestamp', 'real_timestamp', 'ticker']]
-        test_df = test_df[['model_timestamp', 'ticker', 'close', *covariates]]
+        test_df = test_df[['model_timestamp', 'ticker', 'close', 'eval_target_ok', *covariates]]
 
         e = walk_forward_predict(
             pipeline, 
