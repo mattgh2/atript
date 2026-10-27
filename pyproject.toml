@@ -24,7 +24,9 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "dominate",
-    "beautifulsoup4"
+    "beautifulsoup4",
+    "matplotlib",
+    "pandas_market_calendars"
 ]
 [project.scripts]
 atript = "futures_pipeline.__main__:main"
