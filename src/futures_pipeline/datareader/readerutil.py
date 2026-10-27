@@ -10,6 +10,7 @@ import re
 from tqdm import tqdm
 import pandas_market_calendars as mcal
 from logging import Logger
+from typing import cast
 from calendar import Month
 
 logger = Logger(name='log', level=2)
@@ -59,7 +60,7 @@ Returns the market open and close timestamps for each session in [begin, end].
 @note Fallback supports MES/ES equity-index futures schedules. 
 """
 def fetch_session_dates(
-    contract: str, 
+    product_code: str, 
     begin: str, 
     end: str,
     client: RESTClient | None = None
@@ -68,8 +69,8 @@ def fetch_session_dates(
     if client is None:
         client = create_massive_client(load_settings().massive_api_key)
 
-    schedules = client.list_futures_schedules(
-        product_code=contract,
+    schedules = client.list_futures_schedules( # type: ignore
+        product_code=product_code,
         sort="product_code.asc",
         session_end_date_gte=begin,
         session_end_date_lte=end
