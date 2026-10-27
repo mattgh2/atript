@@ -71,8 +71,8 @@ def ttr(data: pd.DataFrame) -> pd.Series:
         current = data.iloc[positions].copy()
         current['previous_close'] = current['close'].shift(-1)
         tr = current.apply(
-            lambda row: max(row["high"], row["previous_close"])
-            - min(row["low"], row["previous_close"]), axis=1
+            lambda row: np.max([row["high"], row["previous_close"]])
+            - np.min([row["low"], row["previous_close"]]), axis=1
         )
         output[positions] = tr
     return pd.Series(output, index=data.index, name="ttr")
