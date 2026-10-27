@@ -184,7 +184,6 @@ def fetch_training_set(
         day = pd.Timestamp(day).strftime("%Y-%m-%d")
 
         # Day is still missing from both massive.com and mcal. Just skip this day.
-        # Drop the day or 
         if not session_dates.get(day) or not session_hours.get(day):
             continue
 
@@ -218,17 +217,23 @@ def fetch_training_set(
 
             refetched.append(refetched_df)
 
-    refetched_df = pd.concat(refetched, ignore_index=True)
 
-    result = (
-        pd.concat([result, refetched_df], ignore_index=True)
-        .drop_duplicates(["window_start"], ignore_index=True)
-    )
+    if len(refetched):
+        refetched_df = pd.concat(refetched, ignore_index=True)
+        result = pd.concat([result, refetched_df], ignore_index=True)
+
+    result = result.drop_duplicates(['ticker', "window_start"], ignore_index=True)
+
 
     for day, df in result.groupby('session_end_date'):
-        print(f"Got {df.shape[0]} rows for {day}. Ticker: {df['ticker'].iloc[0]}")
+        # Drop the sessions that do not have schedule data.
+        if not session_dates.get(day) or not session_hours.get(str(day)):
+            drop_idx = result['session_end_date'].eq(day)
+            result = result.loc[~drop_idx]
+        else:
+            print(f"Got {df.shape[0]} rows for {day}. Ticker: {df['ticker'].iloc[0]}")
 
-    return result
+    return result.reset_index(drop=True)
 
 
 def load_train(symbol: str, resolution: str):
