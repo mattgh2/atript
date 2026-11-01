@@ -27,6 +27,7 @@ from .typedefs import (
     PredictionInterval,
     FetchTrainArgs,
 )
+from .web_util import web_scaffolding
 
 def main():
     settings: Settings = load_settings()
@@ -36,6 +37,7 @@ def main():
 
     reset: bool = cli_args.get("reset", False)
     initialize_config(reset)
+    web_scaffolding()
 
     if (reset):
         return
