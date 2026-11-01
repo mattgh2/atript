@@ -18,53 +18,70 @@ def web_scaffolding():
     if WEB_PATH.exists():
         return
 
-    hyperparams_dir = WEB_PATH / "hyperparams"
-    zeroshot_dir = hyperparams_dir / "zeroshot"
-    finetuned_dir = hyperparams_dir / "finetuned"
-
-    zeroshot_dir.mkdir(parents=True)
-    finetuned_dir.mkdir(parents=True)
-
     main_page = WEB_PATH / "main.html"
-    hyperparams_page = hyperparams_dir / 'hyperparams.html'
+
+    zeroshot_dir = WEB_PATH / "zeroshot"
+    finetuned_dir = WEB_PATH / "finetuned"
+
+    for dir in [zeroshot_dir, finetuned_dir]:
+        hyperparam_dir = dir / f"hyperparameter_tuning"
+        abalation_dir = dir / f"abalation"
+        hyperparam_dir.mkdir(parents=True, exist_ok=True)
+        abalation_dir.mkdir(parents=True, exist_ok=True)
+
+
+
     zeroshot_page = zeroshot_dir / 'nav.html'
     finetuned_page = finetuned_dir / 'nav.html'
+    # abalation_page = WEB_PATH / f"abalation"
+    # hyperparams_page = hyperparams_dir / 'hyperparams.html'
 
-    for page in [main_page, hyperparams_page, zeroshot_page, finetuned_page]:
+
+    for page in [main_page, zeroshot_page, finetuned_page]:
         page.touch()
 
     main_doc: dominate.document = dominate.document(title="main")
 
     with main_doc:
         with div(id="buttons"):
-            with div(id="hyperparams"):
-                a("hyperparameter optimization", href="hyperparams/hyperparams.html")
+            with div(id="anchors"):
+                a("Zero Shot", href=zeroshot_page)
+                a("Fine Tuned", href=finetuned_page)
+
     with open(main_page, 'w') as f:
         f.write(str(main_doc))
+    
 
-    hyperparams_doc = dominate.document(title="hyperparams")
-    with hyperparams_doc:
-        with div(id="buttons"):
-            a("Back", href=main_page.resolve())
-            a("Zero Shot", href=WEB_PATH/f"hyperparams/zeroshot/nav.html")
-            a("Fine Tuned", href=WEB_PATH/f"hyperparams/finetuned/nav.html")
-            a(href=main_page.resolve())
-
-    with open(hyperparams_page, 'w') as f:
-        f.write(str(hyperparams_doc))
-
-    for page in [zeroshot_page, finetuned_page]:
+    for dir, page in [(zeroshot_dir, zeroshot_page), (finetuned_dir, finetuned_page)]:
         doc = dominate.document(title=page.stem)
         with doc:
             with div(id="buttons"):
-                a("Back", href=hyperparams_page)
-                a("Context Length Predictions", href="context_lengths.html")
-                a("Context Length Metrics", href="context_length_metrics.html")
+                a("Back", href=main_page)
+                a('hyperparameter tuning', href="hyperparameter_tuning/hyperparameters.html")
+                a('Feature Abalation', href="abalation/abalation.html")
 
         with open(page, 'w') as f:
             f.write(str(doc))
 
+        hyperparam_doc = dominate.document(title='hyperparams')
+        hyperparam_page = dir / f'hyperparameter_tuning/hyperparameters.html'
 
+        with hyperparam_doc:
+            with div(id='buttons'):
+                a("Back", href="../nav.html")
+                a("context_lengths", href="context_lengths.html")
+                a("metrics", href="context_length_metrics.html")
+
+        with open(hyperparam_page, 'w') as f:
+            f.write(str(hyperparam_doc))
+        
+
+"""
+Writes a sequence of figures to html.
+
+@param fig_path
+@param page_path the pathname where the html file is located.
+"""
 def display_figs_on_page(figs: list[tuple[Path, list[str]]], page_path: Path):
     page_path.touch(exist_ok=True)
     last_update = datetime.today()
@@ -94,14 +111,14 @@ def display_figs_on_page(figs: list[tuple[Path, list[str]]], page_path: Path):
 (2) Parse for resolutions div
 (3) seaach for resolution
 """
-def update_resolution_page(page: Path, resolution: str, href_to: Path):
+def update_resolution_page(page: Path, resolution: str, href_to: Path, back: Path):
     def make_page():
         if not page.exists():
             page.touch()
         doc = dominate.document()
         with doc:
             with div():
-                with a("Back", href="nav.html"): ...
+                with a("Back", href=back): ...
             with div(id="resolutions"): ...
         with open(page, 'w') as fp:
             fp.write(str(doc))
@@ -132,9 +149,3 @@ def update_resolution_page(page: Path, resolution: str, href_to: Path):
 
     with open(page, 'w') as fp:
         fp.write(soup.prettify())
-
-
-    
-
-
-
