@@ -55,34 +55,3 @@ def parameter_performance(
     else:
         plt.show()
 
-
-"""
-Writes a directory of figures to html.
-
-@param fig_path
-@param page_path the pathname where the html file is located.
-"""
-def display_figs(figs: list[tuple[Path, list[str]]], page_path: Path):
-    page_path.touch(exist_ok=True)
-    last_update = datetime.today()
-    doc: dominate.document = dominate.document(title="foo")
-    with doc.head:
-        link(rel="stylesheet", href="../../src/output.css")
-    with doc:
-        with div():
-            with a("Back", href="../../../main.html"): ...
-        with div(f"last_update: {str(last_update)}"): ...
-        with div(id='images', cls="flex flex-wrap"):
-            for fig, text in figs:
-                with div(id=f"{fig.stem}-cnt", cls="flex flex-col items-center"):
-                    with div(id=fig.stem):
-                        img(src=fig.resolve())
-                    if len(text):
-                        with div(id=f"{fig.name}-text"):
-                            for item in text:
-                                p(item)
-
-
-    with open(page_path, 'w') as f:
-        f.write(str(doc))
-
