@@ -16,6 +16,7 @@ from tqdm import tqdm
 from .figs import plot_predictions, parameter_performance
 from .web_util import web_scaffolding, display_figs_on_page, update_resolution_page
 from logging import Logger
+from collections.abc import Sequence, Mapping
 
 Log = Logger(name='log', level=1)
 
@@ -25,6 +26,7 @@ VOLATILITY = ["VR", "ATR", "percent_b"]
 VOLUME = ["volume", "VWAP"]
 TIME = ['has_time_gap', 'log_elapsed_intervals']
 MISSING = ['follows_missing', 'was_missing']
+
 
 # VOLATILITY = [
 #     "VR",
@@ -58,7 +60,6 @@ def load_and_split_training_set(
 
     product_code = get_product_code(symbol)
 
-    breakpoint()
     train_df: pd.DataFrame = load_prior_data(
         symbol=product_code, 
         resolution=resolution,
@@ -157,7 +158,7 @@ def build_validation_input(
     covariates: list[str], 
     pred_length: int, 
     context_length: int
-) -> list:
+) -> tuple[Sequence[Mapping], Sequence[Mapping]]:
 
     """ Note: A validation item results in a single forecast window. 
               Need to futher split each item into multiple validation windows."""              
@@ -165,7 +166,7 @@ def build_validation_input(
     """ Note: Forecast windows containing nan should be dropped. """
 
     val = []
-    contract_items: dict[str, list[dict]] = {}
+    contract_items: dict[str, list[tuple[dict, dict]]] = {}
     for ticker, contract_df in val_df.groupby('ticker', sort=False):
         ticker = cast(str, ticker)
         # Ensure sorted by ascending timestamp.
@@ -195,12 +196,19 @@ def build_validation_input(
                 for column, values in window[[*covariates]].to_dict(orient="list").items()
             }
             contract_items.setdefault(ticker, []).append(
-                {
-                    "target": window['close'].to_numpy(),
-                    "past_covariates": past_covariates,
-                    # "future_covariates": {} # TODO: load future time covariates
-                }
-            ) 
+                (
+                    {
+                        "target": window["close"].to_numpy(),
+                        "past_covariates": past_covariates,
+                        # "future_covariates": {} # TODO: load future time covariates
+                    },
+                    {
+                        "context": window.iloc[:-pred_length],
+                        "actual": window[['close', 'model_timestamp']].tail(pred_length),
+                        "origin": origin,
+                    }
+                )
+            )
 
     if len(contract_items) == 0:
         raise ValueError(f"No contract has a sufficent length for validation.")
@@ -211,15 +219,20 @@ def build_validation_input(
     for contract, items in contract_items.items():
         items[:] = items[-min_origins:]
 
-    val = [
+    # Flatten the (val_item, window) pairs.
+    items = [
             item for items in contract_items.values() 
             for item in items
     ]
 
-    if not val:
+
+    val_items, windows = zip(*items)
+    breakpoint()
+
+    if not val_items or not windows:
         raise ValueError("No contracts contain enough validation observations.")
 
-    return val
+    return (val_items, windows)
 
 
 def run_model(
@@ -252,6 +265,19 @@ def run_model(
         hf_token=hf_token,
     )
 
+    # dataset = load_and_split_training_set(
+    #     train_size=0.90,
+    #     symbol=ticker, 
+    #     resolution=resolution, 
+    #     context_length=context_length, 
+    #     pred_length=pred_length
+    # )
+
+    # from .abalation import abalation
+    # abalation(dataset, pred_length, context_length, quantiles, prediction_interval)
+    # return
+
+    
     if train:
         train_df, test_df, validate_df = load_and_split_training_set(
             train_size=0.90,
@@ -263,7 +289,7 @@ def run_model(
 
         # Build model inputs.
         training_input = build_training_input(train_df, covariates, pred_length)
-        validation_input = build_validation_input(validate_df, covariates, pred_length, context_length)
+        validation_input, _ = build_validation_input(validate_df, covariates, pred_length, context_length)
 
         pipeline = finetune_chronos(
             pipeline=pipeline,
@@ -316,8 +342,8 @@ def run_model(
     if eval:
         context_df['eval_target_ok'] = history_df['eval_target_ok']
         if tune:
-            context_lengths = [2 ** n for n in range(5, 14)]
-            # context_lengths = [2 ** n for n in range(5, 7)]
+            # context_lengths = [2 ** n for n in range(5, 14)]
+            context_lengths = [2 ** n for n in range(5, 7)]
             tune_context_length(
                     pipeline,
                     context_lengths,
@@ -410,7 +436,7 @@ Loads a Chronos model from local storage or Hugging Face.
 @returns A ``Chronos2Pipeline``
 """
 def load_chronos(
-    model_dir: Path | None,
+    model_dir: Path | None = None,
     hf_token: str | None = None,
 ) -> Chronos2Pipeline:
     if model_dir and not model_dir.exists():
@@ -916,7 +942,7 @@ def predict_and_evaluate(
             context_length, 
             quantiles,
             num_windows
-        )
+    )
     e = e.merge(
                 history_df[['model_timestamp','real_timestamp', 'ticker']],
                 on=['ticker', "model_timestamp"],
@@ -943,12 +969,20 @@ def tune_context_length(
     zero_shot: bool,
     resolution: str
 ) -> None:
-    web_scaffolding()
-    base_path = WEB_PATH / f"hyperparams" / ("zeroshot" if zero_shot else "finetuned")
-    context_length_page = base_path / "context_lengths.html"
-    metrics_page = base_path / "context_length_metrics.html"
-    update_resolution_page(context_length_page, resolution, base_path / resolution / "predictions.html")
-    update_resolution_page(metrics_page, resolution, base_path / resolution / "metrics.html")
+
+    base_path = WEB_PATH / ("zeroshot" if zero_shot else "finetuned") / f"hyperparameter_tuning"
+    update_resolution_page(
+        base_path / "context_lengths.html",
+        resolution,
+        base_path / resolution / "predictions.html",
+        Path("hyperparameters.html"),
+    )
+    update_resolution_page(
+        base_path / "context_length_metrics.html",
+        resolution,
+        base_path / resolution / "metrics.html",
+        Path("hyperparameters.html"),
+    )
 
     # Ensure the same number of prediction windows are used for each parameter value.
     num_pred_windows = (context_df.shape[0] - max(param_values)) // pred_length
@@ -963,20 +997,11 @@ def tune_context_length(
 
     fig_path.mkdir(exist_ok=True, parents=True)
 
-    save_predictions_path: Path = (
-        PROJECT_ROOT / f"web/hyperparams/" / 
-        (f"zeroshot/{resolution}" if zero_shot else f"finetuned/{resolution}")
+    save_path: Path = (
+        WEB_PATH / (f"zeroshot/" if zero_shot else f"finetuned/") / f"hyperparameter_tuning/{resolution}"
     )
 
-    save_predictions_path.mkdir(parents=True, exist_ok=True)
-    save_predictions_file = save_predictions_path / "predictions.html"
-
-    save_metrics_path: Path = (
-            PROJECT_ROOT / f"web/hyperparams" /
-            (f"zeroshot/{resolution}" if zero_shot else f"finetuned/{resolution}")
-    )
-    save_metrics_path.mkdir(parents=True, exist_ok=True)
-    save_metrics_file: Path = save_metrics_path / "metrics.html"
+    save_path.mkdir(parents=True, exist_ok=True)
 
     for context_length in param_values:
         eval_results: EvaluationResult = predict_and_evaluate(
@@ -1033,7 +1058,7 @@ def tune_context_length(
             param_values,
             mae_scores,
             mae_perf_path
-        )
+    )
 
     dir_acc_perf_path = fig_path / "directional-performance.png"
     parameter_performance(
@@ -1043,6 +1068,9 @@ def tune_context_length(
             directional_acc,
             dir_acc_perf_path
         )
+
+    save_predictions_file = save_path / "predictions.html"
+    save_metrics_file: Path = save_path / "metrics.html"
     display_figs_on_page(
                 figs,
                 save_predictions_file
