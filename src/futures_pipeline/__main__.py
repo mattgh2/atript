@@ -35,8 +35,9 @@ def main():
 
     cli_args: dict = vars(settings.defaults) | vars(parser.parse_args())
 
-    reset: bool = cli_args.get("reset", False)
+    reset: bool = cli_args.get("reset", False) 
     initialize_config(reset)
+
     web_scaffolding()
 
     if (reset):
@@ -84,6 +85,7 @@ def main():
                     train=args.train,
                     zero_shot=args.zero_shot,
                     tune=args.tune,
+                    _abalation=args.abalation,
                     store_weights= not args.no_store_weights,
                     eval=args.eval
             )
