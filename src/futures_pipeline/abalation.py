@@ -9,8 +9,7 @@ from .model import (
     build_training_input,
     build_validation_input,
     TrainTestValidate,
-    load_chronos,
-    predict_chronos,
+    load_chronos, predict_chronos,
     evaluate,
 )
 from pathlib import Path
@@ -38,6 +37,8 @@ Test: No volume
       No volatility  + range-based indicators
       NO missingness + elapsed-time feature
       NO volume derived features together.
+
+      For each group, compare the full set with a minimal set.
 
 """
 
@@ -94,11 +95,12 @@ def run_experiment(
         pred_df = pd.merge(
                 left=pred_df,
                 right=actual,
-                on="model_timestamp",
+                on=['ticker', "model_timestamp"],
+                validate="one_to_one",
                 how="inner"
         )
 
-        pred_df['origin_close'] = window['origin']
+        pred_df['origin_close'] = context_df['close'].iloc[-1]
         pred_df['horizon'] = np.arange(1, len(pred_df) + 1)
 
         predictions.append(pred_df)
@@ -112,19 +114,26 @@ def run_experiment(
         .reset_index(drop=True)
     )
 
+    first_contract = eval_df['ticker'].unique()[0]
+
+    plot_df = eval_df[eval_df['ticker'].eq(first_contract)]
+
+    plot_y_pred = plot_df['predictions'].head(200)
+    plot_y_true = plot_df['close'].head(200)
+    plot_lower = plot_df[str(prediction_interval.lower)].head(200)
+    plot_upper = plot_df[str(prediction_interval.upper)].head(200)
+
     eval_results = evaluate(eval_df, quantiles, prediction_interval)
 
     current_fig_path = fig_path / f"{name}-predictions.png"
 
     plot_predictions(
-        eval_results.y_pred.head(200),
-        eval_results.y_true.head(200),
-        eval_results.lower_p.head(200),
-        eval_results.upper_p.head(200),
+        plot_y_pred,
+        plot_y_true,
+        plot_lower,
+        plot_upper,
         current_fig_path,
     )
-
-    
 
     output: list[str] = []
 
@@ -175,10 +184,13 @@ def abalation(
             )
         )
 
-    experiments = {
-            f"no_{group}": covariates_for(exclude=frozenset({group})) 
-            for group in features_groups
-    }
+    # experiments = {
+    #         f"no_{group}": covariates_for(exclude=frozenset({group})) 
+    #         for group in features_groups
+    # }
+
+    experiments = {}
+    experiments['full_set'] = covariates_for(exclude=frozenset({}))
 
     figs: list[tuple[Path, list[str]]] = []
     for name, covariates in experiments.items():
@@ -204,4 +216,4 @@ def abalation(
         WEB_PATH / f"finetuned/nav.html",
     )
 
-    display_figs_on_page(figs, WEB_PATH / f"finetuned/abalation/{resolution}")
+    display_figs_on_page(figs, WEB_PATH / f"finetuned/abalation/{resolution}/results.html")
