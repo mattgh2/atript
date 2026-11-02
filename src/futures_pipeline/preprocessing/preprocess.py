@@ -77,17 +77,22 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
     data = data.drop(columns=['missing_prev'], axis=1)
     data = get_time_features(data, candle_resolution)
-    
+
     data["_session_key"] = pd.to_datetime(
         data["session_end_date"]
     ).dt.strftime("%Y-%m-%d")
-    
+
     session_audit = audit_session_coverage(
         data,
         get_product_code(symbol),
         candle_resolution,
     )
-    with open(WEB_PATH / f"audit.html", 'w') as fp:
+
+    audit_path = WEB_PATH / f"audit.html"
+    if not audit_path.exists():
+        audit_path.touch()
+
+    with open(audit_path, 'w') as fp:
         fp.write(str(session_audit))
 
     # A first/last session of a contract cannot be reliably padded on its
@@ -104,18 +109,16 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
         how="left",
         validate="many_to_one",
     )
-    
+
     data["eval_target_ok"] = (
         data["was_missing"].eq(0) & ~(is_contract_edge_session & ~data["session_complete"])
     ).astype("int8")
-    
+
     data = data.drop(columns=["_session_key"])
-    
+
     data["prev_was_missing"] = data.groupby('ticker')['was_missing'].shift(-1)
     data['follows_missing'] = (data['prev_was_missing'].eq(1) & data['was_missing'].eq(0)).astype("int8")
     data = data.drop(columns=['prev_was_missing'], axis=1)
-
-    # Add a feature for follows_mising_row
 
     data = data.set_index("ticker")
 
@@ -130,6 +133,8 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
     # Volume.
     data["VWAP"] = vwap(data)
+    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.
+    data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
 
     # Trend indicators.
     data['SMA'] = sma(data['close'])
@@ -137,45 +142,44 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     data['DMA'] = dma(data['SMA'])
     data['T3MA'] = t3ma(data['close'])
 
-    # TODO: These need to be grouped by ticker
-    # data['close_to_ema'] = data['close'] / data["ema"] - 1
-    # data['ema_slope'] = data['ema'] / data['ema'].shift(-1) - 1
-    # data['ema_slope_4'] = data['ema'] / data['ema'].shift(-4) - 1
-
     # Volatility.
+    # data['rolling_std_20'] = rolling_std(data['returns'], 20)
     bb = bollinger_bands(data['close'])
     keltner = kc(data)
-    # data['rolling_std_20'] = rolling_std(data['returns'], 20)
     data["percent_b"] = bb.percent_b
-    data["upper_b"] = bb.upper_band
-    data["lower_b"] = bb.lower_band
-    data['lower_kc'] = keltner.lower_band
-    data['upper_kc'] = keltner.upper_band
+    data["bollinger_bandwidth"] = (bb.upper_band - bb.lower_band) / bb.middle_band
+
+    
+    keltner_position = np.full(len(data), np.nan)
+    np.divide(
+        (data["close"] - keltner.lower_band),
+        keltner.upper_band - keltner.lower_band,
+        out=keltner_position,
+        where=(keltner.upper_band - keltner.lower_band) > 0
+    )
+
+    data["keltner_position"] = keltner_position
+
+    keltner_width = np.full(len(data), np.nan)
+    np.divide(
+            keltner.upper_band - keltner.lower_band,
+            keltner.middle_band,
+            out=keltner_width,
+            where=keltner.middle_band > 0
+    )
+    data['keltner_width'] = keltner_width
+
     data['bollinger_squeeze'] = keltner.bollinger_squeeze
+    data['bollinger_squeeze_ratio'] = keltner.squeeze_ratio
+
     data['ATR'] = atr(data)
+    data['normalized_atr'] = atr(data) / data['close']
     data['VR'] = vr(data)
 
-    # TODO: Group by ticker
-    # data['intrabar_range'] = (data['high'] - data['low']) / data['close']
-    # previous_close = data['close'].shift(-1)
-    # data['true_range'] = pd.concat(
-    #         [
-    #             data['high'] - data['low'],
-    #             (data['high'] - previous_close).abs(),
-    #             (data['low'] - previous_close).abs()
-    #         ], axis=1
-    # ).max(axis=1)
-    # data['normalized_true_range'] = data["true_range"] / data['close']
-
-    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.
-    # TODO: Group by ticker
-    # data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
+    data['log_volume'] = np.log1p(data['volume'])
 
     data = data.replace([np.inf, -np.inf], np.nan)
     data = data.reset_index()
-
-    # Chronos-2 supports nan values.
-    # data = data.dropna(subset=model_features).reset_index(drop=True)
 
     data = convert_timestamps(data, candle_resolution)
 
@@ -195,15 +199,12 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
         print(f"Wrote {path} ({rows.shape[0]:,} rows)")
 
 
-"""
-
-"""
 def convert_timestamps(df: pd.DataFrame, resolution: CandleResolution) -> pd.DataFrame:
 
     model_step = df.groupby("ticker").cumcount(ascending=False)
 
     start = pd.Timestamp("2000-01-01")
-    df["model_timestamp"] = start + pd.to_timedelta(model_step * resolution.length, unit=resolution.to_timedelta_unit())  # type: ignore
+    df["model_timestamp"] = start + pd.to_timedelta(model_step * resolution.length, unit=resolution.to_timedelta_unit())
 
     return df
 

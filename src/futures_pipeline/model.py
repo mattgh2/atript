@@ -19,14 +19,21 @@ from logging import Logger
 from collections.abc import Sequence, Mapping
 
 Log = Logger(name='log', level=1)
-
 TREND = ['EMA', 'SMA', 'DMA', 'T3MA']
 MOMENTUM = ["RSI", 'FSO', 'SSO', 'ROC', 'CCI']
-VOLATILITY = ["VR", "ATR", "percent_b"]
-VOLUME = ["volume", "VWAP"]
+VOLATILITY = [
+    "VR",
+    "normalized_atr",
+    "percent_b",
+    "bollinger_bandwidth",
+    "keltner_position",
+    "keltner_width",
+    "bollinger_squeeze_ratio",
+    "bollinger_squeeze",
+]
+VOLUME = ["log_volume", "close_to_vwap"]
 TIME = ['has_time_gap', 'log_elapsed_intervals']
 MISSING = ['follows_missing', 'was_missing']
-
 
 # VOLATILITY = [
 #     "VR",
@@ -188,7 +195,10 @@ def build_validation_input(
 
             # Dont include the window if there are nan's in the prediction rows.
             # This is interfere with evaluation metrics.
-            if window['close'].tail(pred_length).isna().any():
+            if (
+                window["close"].tail(pred_length).isna().any()
+                or not window.tail(pred_length)["eval_target_ok"].eq(1).all()
+            ):
                 continue
 
             past_covariates = {
@@ -204,7 +214,7 @@ def build_validation_input(
                     },
                     {
                         "context": window.iloc[:-pred_length],
-                        "actual": window[['close', 'model_timestamp']].tail(pred_length),
+                        "actual": window[['ticker', 'close', 'model_timestamp', 'real_timestamp']].tail(pred_length),
                         "origin": origin,
                     }
                 )
@@ -225,9 +235,7 @@ def build_validation_input(
             for item in items
     ]
 
-
     val_items, windows = zip(*items)
-    breakpoint()
 
     if not val_items or not windows:
         raise ValueError("No contracts contain enough validation observations.")
@@ -247,8 +255,22 @@ def run_model(
     train: bool = False,
     zero_shot: bool = False,
     eval: bool=False,
-    tune: bool = False
+    tune: bool = False,
+    _abalation: bool = False
 ) -> None:
+
+    if _abalation:
+        dataset = load_and_split_training_set(
+            train_size=0.90,
+            symbol=ticker, 
+            resolution=resolution, 
+            context_length=context_length, 
+            pred_length=pred_length
+        )
+
+        from .abalation import abalation
+        abalation(dataset, pred_length, context_length, quantiles, prediction_interval, resolution)
+        return
 
     covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME, *MISSING]
 
@@ -264,18 +286,6 @@ def run_model(
         load_dir,
         hf_token=hf_token,
     )
-
-    # dataset = load_and_split_training_set(
-    #     train_size=0.90,
-    #     symbol=ticker, 
-    #     resolution=resolution, 
-    #     context_length=context_length, 
-    #     pred_length=pred_length
-    # )
-
-    # from .abalation import abalation
-    # abalation(dataset, pred_length, context_length, quantiles, prediction_interval)
-    # return
 
     
     if train:

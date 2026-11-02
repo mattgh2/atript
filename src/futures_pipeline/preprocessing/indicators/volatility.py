@@ -4,18 +4,33 @@ from .util import smoothing_average, ttr
 from .trend import ema
 from typing import NamedTuple
 
+"""
+upper_b, lower_b, upper_kc, and lower_kc are highly redundent and price scale dependent.
+Encodes the same information: current price level plus volatility.
+
+Compact, normalized features:
+percent_b: where price sits within bollinger bands
+normalized atr: (atr / close) rather than atr
+keltner_position: (close - lower_kc) / (upper_kc - lower_kc)
+keltner_width: (upper_kc - lower_kc) / middle_kc
+bollinger_keltner_squeeze 
+
+"""
+
 
 class BollingerBands(NamedTuple):
     upper_band: pd.Series
     lower_band: pd.Series
+    middle_band: pd.Series
     percent_b: pd.Series
 
 
 class KeltnerChannel(NamedTuple):
     upper_band: pd.Series
     lower_band: pd.Series   
+    middle_band: pd.Series
     bollinger_squeeze: pd.Series
-
+    squeeze_ratio: pd.Series
 
 """
 Computes a rolling window standard deviation as a measure of market volatility on recent movements.
@@ -60,6 +75,7 @@ def bollinger_bands(prices: pd.Series, period: int = 20, std: int = 2) -> Bollin
     percent_b: np.ndarray = np.full(len(prices), np.nan)
     upper_band: np.ndarray = np.full(len(prices), np.nan)
     lower_band: np.ndarray = np.full(len(prices), np.nan)
+    middle_band: np.ndarray = np.full(len(prices), np.nan)
 
     weights = np.ones(period) / period
 
@@ -95,10 +111,12 @@ def bollinger_bands(prices: pd.Series, period: int = 20, std: int = 2) -> Bollin
         )
 
         percent_b[positions[:count]] = pb
+        middle_band[positions[:count]] = rolling_mean
 
     return BollingerBands(
         upper_band=pd.Series(upper_band, index=prices.index, name="upper_band"),
         lower_band=pd.Series(lower_band, index=prices.index, name="lower_band"),
+        middle_band=pd.Series(middle_band, index=prices.index, name="middle_band"),
         percent_b=pd.Series(percent_b, index=prices.index, name="percent_b"),
     )
 
@@ -147,7 +165,7 @@ def kc(
     upper_kc: np.ndarray = mid + mult * a
     lower_kc: np.ndarray = mid - mult * a
 
-    upper_b, lower_b, _ = bollinger_bands(
+    upper_b, lower_b, _, _ = bollinger_bands(
         data["close"], period=bollinger_period, std=bollinger_std
     )
 
@@ -160,10 +178,23 @@ def kc(
 
 
     bollinger_squeeze = np.full(len(upper_b), np.nan)
+    squeeze_ratio = np.full(len(upper_b), np.nan)
+
     bollinger_squeeze[valid] = (upper_b[valid] < upper_kc[valid]) & (lower_b[valid] > lower_kc[valid])
+    squeeze_ratio = np.full(len(data), np.nan)
+    
+    np.divide(
+            (upper_b - lower_b),
+            (upper_kc - lower_kc),
+            out=squeeze_ratio,
+            where=valid & ((upper_kc - lower_kc) > 0)
+    )
 
     return KeltnerChannel(
         upper_band=pd.Series(upper_kc, index=data.index, name="upper_kc"),
         lower_band=pd.Series(lower_kc, index=data.index, name="lower_kc"),
-        bollinger_squeeze= pd.Series(bollinger_squeeze, index=data.index, name='bollinger_squeeze')
+        middle_band=pd.Series(mid, index=data.index, name="middle_kc"),
+        bollinger_squeeze=pd.Series(bollinger_squeeze, index=data.index, name='bollinger_squeeze'),
+        squeeze_ratio=pd.Series(squeeze_ratio, index=data.index, name='squeeze_ratio'),
     )
+
