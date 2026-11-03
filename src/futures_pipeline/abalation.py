@@ -215,5 +215,5 @@ def abalation(
         path / f"{resolution}/results.html",
         WEB_PATH / f"finetuned/nav.html",
     )
-
-    display_figs_on_page(figs, WEB_PATH / f"finetuned/abalation/{resolution}/results.html")
+    (path / resolution).mkdir(exist_ok=True, parents=True)
+    display_figs_on_page(figs, WEB_PATH / f"finetuned/abalation/{resolution}/results.html", path / 'resolutions.html')

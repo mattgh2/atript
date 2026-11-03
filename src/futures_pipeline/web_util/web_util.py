@@ -58,7 +58,7 @@ def web_scaffolding():
             with div(id="buttons"):
                 a("Back", href=main_page)
                 a('hyperparameter tuning', href="hyperparameter_tuning/hyperparameters.html")
-                a('Feature Abalation', href="abalation/abalation.html")
+                a('Feature Abalation', href="abalation/resolutions.html")
 
         with open(page, 'w') as f:
             f.write(str(doc))
@@ -82,7 +82,7 @@ Writes a sequence of figures to html.
 @param fig_path
 @param page_path the pathname where the html file is located.
 """
-def display_figs_on_page(figs: list[tuple[Path, list[str]]], page_path: Path):
+def display_figs_on_page(figs: list[tuple[Path, list[str]]], page_path: Path, back: Path):
     page_path.touch(exist_ok=True)
     last_update = datetime.today()
     doc: dominate.document = dominate.document(title="foo")
@@ -90,7 +90,7 @@ def display_figs_on_page(figs: list[tuple[Path, list[str]]], page_path: Path):
         link(rel="stylesheet", href="../../src/output.css")
     with doc:
         with div():
-            with a("Back", href="../context_lengths.html"): ...
+            with a("Back", href=back): ...
         with div(f"last_update: {str(last_update)}"): ...
         with div(id='images', cls="flex flex-wrap"):
             for fig, text in figs:

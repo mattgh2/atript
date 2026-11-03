@@ -980,6 +980,7 @@ def tune_context_length(
     resolution: str
 ) -> None:
 
+
     base_path = WEB_PATH / ("zeroshot" if zero_shot else "finetuned") / f"hyperparameter_tuning"
     update_resolution_page(
         base_path / "context_lengths.html",
@@ -1082,11 +1083,13 @@ def tune_context_length(
     save_predictions_file = save_path / "predictions.html"
     save_metrics_file: Path = save_path / "metrics.html"
     display_figs_on_page(
-                figs,
-                save_predictions_file
-        )
+        figs,
+        save_predictions_file,
+        base_path / "context_lengths.html",
+    )
 
     display_figs_on_page(
-            [(mae_perf_path, []), (dir_acc_perf_path, [])],
-            save_metrics_file
-        )
+        [(mae_perf_path, []), (dir_acc_perf_path, [])],
+        save_metrics_file,
+        base_path / "context_length_metrics.html",
+    )
