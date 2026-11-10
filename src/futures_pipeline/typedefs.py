@@ -56,6 +56,68 @@ class EvaluationResult:
     quantile_calibration: dict[float, float]
     calibration_error: dict[float, float]
 
+    def to_strings(self) -> list[str]:
+        """Format the evaluation metrics for terminal or HTML reporting."""
+        output = [
+            "=== POINT FORECAST METRICS ===",
+            "=== BY HORIZON ===",
+            *(
+                f"H{h}: count={row['count']:.0f}, "
+                f"MAE={row['mae']:.4f}, "
+                f"RMSE={row['rmse']:.4f}, "
+                f"direction={row['directional_accuracy']:.2%}"
+                for h, row in self.by_horizon.iterrows()
+            ),
+            f"MAE: {self.mae:.8f}",
+            f"Baseline MAE: {self.baseline_mae:.8f}",
+            f"MAE Skill: {self.mae_skill:.2%}",
+            f"RMSE: {self.rmse:.8f}",
+            f"Directional accuracy: {self.directional_accuracy:.8f}",
+            "=== QUANTILE LOSS ===",
+            *(
+
+                f"H{h}: " + ", ".join(f"q={q}: {value:.6f}" for q, value in row.items())
+                for h, row in self.by_horizon_loss.iterrows()
+            ),
+        ]
+
+        output.extend(
+            f"q={quantile:.2%}: {loss:.10f}"
+            for quantile, loss in sorted(self.loss.items())
+        )
+
+        if self.baseline_loss:
+            output.append("=== BASELINE QUANTILE LOSS ===")
+            output.extend(
+                f"q={quantile:.2%}: {loss:.10f}"
+                for quantile, loss in sorted(self.baseline_loss.items())
+            )
+
+        output.append("=== QUANTILE CALIBRATION ===")
+        output.extend(
+            f"q={quantile:.2%}: {calibration:.2%}"
+            for quantile, calibration in sorted(self.quantile_calibration.items())
+        )
+
+        output.append("=== CALIBRATION ERROR ===")
+        output.extend(
+            f"q={quantile:.2%}: {error:+.2%}"
+            for quantile, error in sorted(self.calibration_error.items())
+        )
+
+        output.extend([
+            "=== PREDICTION INTERVAL ===",
+            *(
+                f"H{h}: coverage={row['coverage']:.2%}, width={row['mean_width']:.4f}"
+                for h, row in self.intervals_by_horizon.iterrows()
+            ),
+            f"PI coverage: {self.pi_coverage:.2%}",
+            f"Nominal coverage: {self.nominal_coverage:.2%}",
+            f"Mean PI width: {self.mean_interval_width:.8f}",
+        ])
+
+        return output
+
 @dataclass
 class BacktestResults:
     trade_count: int
@@ -64,14 +126,25 @@ class BacktestResults:
     average_pnl: float
     gross_profit: float
     gross_loss: float
+    missing_count: int
+    net_sharpe: float
+
+    def to_strings(self) -> list[str]:
+        """Format backtest metrics for terminal or HTML reporting."""
+        return [
+            "=== BACKTEST RESULTS ===",
+            f"Trade count: {self.trade_count:,}",
+            f"Net P&L: ${self.net_pnl:,.2f}",
+            f"Win rate: {self.win_rate:.2%}",
+            f"Average P&L: ${self.average_pnl:,.2f}",
+            f"Gross profit: ${self.gross_profit:,.2f}",
+            f"Gross loss: ${self.gross_loss:,.2f}",
+            f"Total missing rows: {self.missing_count}",
+            f"Net Sharpe per window: {self.net_sharpe:.2f}",
+        ]
 
     def display_results(self) -> None:
-        print(f"Trade count:   {self.trade_count:,}")
-        print(f"Net P&L:       ${self.net_pnl:,.2f}")
-        print(f"Win rate:      {self.win_rate:.2%}")
-        print(f"Average P&L:   ${self.average_pnl:,.2f}")
-        print(f"Gross profit:  ${self.gross_profit:,.2f}")
-        print(f"Gross loss:    ${self.gross_loss:,.2f}")
+        print("\n".join(self.to_strings()))
 
 
 
