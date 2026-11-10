@@ -1,11 +1,13 @@
 from pathlib import Path
 from datetime import datetime
 import dominate
-from dominate.tags import div, img, body, h1, link, p, a
+from dominate.tags import div, img, body, h1, link, p, a, br
 from ..config import WEB_PATH
 from bs4 import BeautifulSoup, Tag
 from typing import Optional, cast
-
+from ..typedefs import BacktestResults, EvaluationResult
+import matplotlib.pyplot as plt
+from collections.abc import Sequence
 
 """ TODO: Make a context_lengths page and context_length_metrics page, 
 creating buttons for each resolution that directs to the pages. 
@@ -20,8 +22,8 @@ def web_scaffolding():
 
     main_page = WEB_PATH / "main.html"
 
-    zeroshot_dir = WEB_PATH / "zeroshot"
-    finetuned_dir = WEB_PATH / "finetuned"
+    zeroshot_dir: Path = WEB_PATH / "zeroshot"
+    finetuned_dir: Path = WEB_PATH / "finetuned"
 
     for dir in [zeroshot_dir, finetuned_dir]:
         hyperparam_dir = dir / f"hyperparameter_tuning"
@@ -30,9 +32,8 @@ def web_scaffolding():
         abalation_dir.mkdir(parents=True, exist_ok=True)
 
 
-
-    zeroshot_page = zeroshot_dir / 'nav.html'
-    finetuned_page = finetuned_dir / 'nav.html'
+    zeroshot_page: Path = zeroshot_dir / 'nav.html'
+    finetuned_page: Path = finetuned_dir / 'nav.html'
     # abalation_page = WEB_PATH / f"abalation"
     # hyperparams_page = hyperparams_dir / 'hyperparams.html'
 
@@ -46,6 +47,7 @@ def web_scaffolding():
         with div(id="buttons"):
             with div(id="anchors"):
                 a("Zero Shot", href=zeroshot_page)
+                br()
                 a("Fine Tuned", href=finetuned_page)
 
     with open(main_page, 'w') as f:
@@ -57,8 +59,13 @@ def web_scaffolding():
         with doc:
             with div(id="buttons"):
                 a("Back", href=main_page)
+                br()
                 a('hyperparameter tuning', href="hyperparameter_tuning/hyperparameters.html")
+                br()
                 a('Feature Abalation', href="abalation/resolutions.html")
+                if dir.stem == 'finetuned':
+                    br()
+                    a('trained models', href='trained.html')
 
         with open(page, 'w') as f:
             f.write(str(doc))
@@ -69,12 +76,14 @@ def web_scaffolding():
         with hyperparam_doc:
             with div(id='buttons'):
                 a("Back", href="../nav.html")
+                br()
                 a("context_lengths", href="context_lengths.html")
+                br()
                 a("metrics", href="context_length_metrics.html")
 
         with open(hyperparam_page, 'w') as f:
             f.write(str(hyperparam_doc))
-        
+
 
 """
 Writes a sequence of figures to html.
@@ -82,7 +91,7 @@ Writes a sequence of figures to html.
 @param fig_path
 @param page_path the pathname where the html file is located.
 """
-def display_figs_on_page(figs: list[tuple[Path, list[str]]], page_path: Path, back: Path):
+def display_figs_on_page(figs: list[tuple[Path, Sequence[str]]], page_path: Path, back: Path):
     page_path.touch(exist_ok=True)
     last_update = datetime.today()
     doc: dominate.document = dominate.document(title="foo")
@@ -149,3 +158,31 @@ def update_resolution_page(page: Path, resolution: str, href_to: Path, back: Pat
 
     with open(page, 'w') as fp:
         fp.write(soup.prettify())
+
+
+def write_training_results(
+    page: Path,
+    eval_results: EvaluationResult, 
+    backtest_results: BacktestResults, 
+    figs: list[Path]
+):
+    if not page.exists():
+        page.touch()
+
+    eval_output = eval_results.to_strings()
+    backtest_output = backtest_results.to_strings()
+    doc = dominate.document('training_results')
+    with doc:
+        for fig_no, fig in enumerate(figs, start=1): 
+            if fig_no % 3 == 0:
+                br()
+            img(src=fig.resolve())
+
+        for line in eval_output:
+            p(line)
+        br()
+        for line in backtest_output:
+            p(line)
+    
+    with open(page, 'w') as fp:
+        fp.write(str(doc))
