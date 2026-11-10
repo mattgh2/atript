@@ -25,6 +25,7 @@ from .config import FIGURE_PATH, WEB_PATH
 from .web_util import display_figs_on_page, update_resolution_page
 from collections.abc import Sequence, Iterable
 from .typedefs import ContractSpec, BacktestResults
+from chronos import Chronos2Pipeline
 
 """
 Start with an all features baseline.
@@ -56,7 +57,7 @@ def run_experiment(
     quantiles,
     prediction_interval,
     resolution
-) -> tuple[Path, Sequence[str]]:
+) -> tuple[float, Chronos2Pipeline, Path, Sequence[str]]:
     train_df, test_df, validation_df = dataset
 
     train_input = build_training_input(train_df, covariates, pred_length=pred_length)
@@ -160,7 +161,9 @@ def run_experiment(
     std = excess.std(ddof=1)
     net_sharpe_per_window = excess.mean() / std if len(excess) >= 2 and std > 0 else float('nan')
 
+
     trade_ledger = signal_ledger[signal_ledger['signal'].ne(0)]
+
 
     summary = BacktestResults(
         trade_count=len(trade_ledger),
@@ -191,7 +194,7 @@ def run_experiment(
         chain(eval_results.to_strings(), ["\n"], summary.to_strings())
     )
 
-    return (current_fig_path, output)
+    return (net_sharpe_per_window, pipeline, current_fig_path, output)
 
 
 def abalation(
@@ -202,6 +205,7 @@ def abalation(
     prediction_interval,
     resolution,
 ):
+
 
     features_groups = {
             "Trend": TREND,
@@ -227,9 +231,10 @@ def abalation(
     experiments['full_set'] = covariates_for(exclude=frozenset({}))
 
     figs: list[tuple[Path, Sequence[str]]] = []
+    best_net_sharpe = -float('inf')
+
     for name, covariates in experiments.items():
-        figs.append(
-            run_experiment(
+        results = run_experiment(
                 name,
                 covariates,
                 dataset,
@@ -238,8 +243,19 @@ def abalation(
                 quantiles,
                 prediction_interval,
                 resolution,
-            )
         )
+        net_sharpe, pipeline, fig = results[0], results[1], results[2:]
+        figs.append(fig)
+        if net_sharpe > best_net_sharpe:
+            best_net_sharpe = net_sharpe
+            Path("abalation_best_model").mkdir(parents=True, exist_ok=True)
+            pipeline.save_pretrained("abalation_best_model")
+
+        del pipeline, results
+
+
+    if best_net_sharpe == -float('inf'):
+        print("No valid sharpe score. No model saved.")
 
     path: Path = WEB_PATH / f"finetuned/abalation"
 
