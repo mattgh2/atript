@@ -316,6 +316,7 @@ def walk_forward_predict(
         '''If any of y_true values in the prediction window are nan, 
            they need to be excluded from evaluation or they will interfere with evaluation metric.'''
         if (
+            pd.isna(context_df.iloc[window_len - 1]['close']) or
             label_rows["close"].isna().any()
             or not label_rows["eval_target_ok"].eq(1).all()
         ):

@@ -174,7 +174,7 @@ def build_validation_input(
             # Dont include the window if there are nan's in the prediction rows.
             # This is interfere with evaluation metrics.
             if (
-                window["close"].tail(pred_length).isna().any()
+                window["close"].tail(pred_length + 1).isna().any()
                 or not window.tail(pred_length)["eval_target_ok"].eq(1).all()
             ):
                 continue
