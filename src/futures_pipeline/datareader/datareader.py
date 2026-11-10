@@ -17,6 +17,7 @@ from .readerutil import session_bounds, mes_roll_date, fetch_session_dates, get_
 from tqdm import tqdm
 import pandas_market_calendars as mcal
 from logging import Logger
+from typing import Literal
 
 from calendar import Month
 
@@ -56,10 +57,12 @@ def fetch_contract_spec(ticker: str, client: RESTClient | None = None) -> Contra
     if client is None:
         client = create_massive_client(load_settings().massive_api_key)
 
+
     rest_client: RESTClient = client
-    contract: FuturesContract | None = cast(FuturesContract | None, next(rest_client.list_futures_contracts(
-        ticker=ticker, limit=1
-    ), None))
+    contract: FuturesContract | None = cast(
+        FuturesContract | None,
+        next(rest_client.list_futures_contracts(ticker=ticker, limit=1), None),
+    )
 
     if contract is None:
         raise ValueError(f"Failed to fetch contract for {ticker}.")
@@ -88,7 +91,8 @@ def fetch_contract_spec(ticker: str, client: RESTClient | None = None) -> Contra
             contract=ticker,
             tick_size=tick_size,
             price_per_tick=price_per_tick,
-            multiplier=multiplier)
+            multiplier=multiplier
+    )
 
 def closest_rollover(year: int, month: int) -> date:
     # Ensure the ending month is one of the roll months.
@@ -471,4 +475,3 @@ def fetch_ticker_expiration(ticker: str, client: RESTClient) -> date:
     if contract.last_trade_date is None:
         raise ValueError(f"last_trade_date is missing.")
     return date.fromisoformat(contract.last_trade_date)
-
