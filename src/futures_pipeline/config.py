@@ -19,6 +19,7 @@ MODEL_DIR: Path = PROJECT_ROOT / "models"
 CONFIG_FILE: Path = PROJECT_ROOT / "config.toml"
 FIGURE_PATH: Path = PROJECT_ROOT / "figures"
 WEB_PATH: Path = PROJECT_ROOT / "web"
+FINETUNED_PATH: Path = WEB_PATH / 'finetuned'
 
 
 @dataclass(frozen=True)
