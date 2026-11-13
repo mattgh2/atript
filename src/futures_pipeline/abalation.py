@@ -1,10 +1,4 @@
 from .model import (
-    TREND,
-    MOMENTUM,
-    VOLATILITY,
-    VOLUME,
-    TIME,
-    MISSING,
     load_chronos,
     build_training_input,
     build_validation_input,
@@ -12,6 +6,7 @@ from .model import (
     load_chronos, 
     evaluate,
 )
+from .model.features import *
 from .model.evaluate import predict_chronos
 from .model.backtest import backtest_strategy
 from pathlib import Path
@@ -208,13 +203,18 @@ def abalation(
 
 
     features_groups = {
-            "Trend": TREND,
-            "Volatility": VOLATILITY,
-            "Momentum": MOMENTUM,
-            "Time": TIME,
-            "Missing": MISSING,
-            "Volume": VOLUME,
+            "Trading Activity": TRADING_ACTIVITY,
+            "Price Location": PRICE_LOCATION,
+            "Session Timing": SESSION_TIMING,
+            "Time Gaps": TIME_GAPS,
+            "Missing": MISSING_FLAGS,
+            "Volatility": NEW_VOLATILITY,
+            "Trend": NEW_TREND,
+            "Recent Returns": RECENT_RETURNS,
+            "Candle Structure": CANDLE_STRUCTURE
+            # "Momentum": MOMENTUM, "Volume": VOLUME,
     }
+
 
     def covariates_for(*, exclude: frozenset[str] = frozenset()) -> list[str]:
         return list(

@@ -111,3 +111,23 @@ def dma(
         .shift(-displacement)
         .rename("dma")
     )
+
+def signed_efficiency_ratio(close: pd.Series, period:int=20):
+    signed_efficiency_ratio = np.full(len(close), np.nan)
+    for positions in close.groupby(level=0, sort=False).indices.values():
+        price = close.iloc[np.array(positions)]
+        if (len(price) < period):
+            continue
+        ser = np.full(len(price), np.nan)
+        for i in range(len(price) - period):
+            window = price[i: i + period + 1]
+            if not np.isfinite(window).all():
+                continue
+            distances = np.abs(-np.diff(window))
+            total_dist = distances.sum()
+            ser[i] = ((price[i] - price[i + period]) / total_dist) if total_dist > 0 else 0.0
+
+        signed_efficiency_ratio[positions] = ser
+
+
+    return pd.Series(signed_efficiency_ratio, index=close.index, name='signed_efficency_ratio')

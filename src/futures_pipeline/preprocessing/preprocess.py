@@ -6,11 +6,12 @@ from ..config import PROCESSED_DATA_DIR, RAW_DATA_DIR, TRAINING_DATA_DIR, WEB_PA
 from ..typedefs import CandleResolution
 import numpy as np
 from .indicators.momentum import smoothed_rsi, RoC, fast_k, slow_k, cci
-from .indicators.trend import ema, dma, sma, t3ma
+from .indicators.trend import ema, dma, sma, t3ma, signed_efficiency_ratio
 from .indicators.volatility import bollinger_bands, rolling_std, atr, vr, kc
 from .indicators.volume import vwap
 from .preproc_util import get_returns
 from datetime import timedelta, datetime, date, time
+import pandas_market_calendars as mcal
 
 def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
@@ -38,6 +39,7 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
             "low",
             "close",
             "volume",
+            "transactions",
             "session_end_date"
     ]
 
@@ -122,72 +124,170 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
     data = data.set_index("ticker")
 
-    # data.loc[missing_prev, 'returns'] = np.nan
-
-    # Momentum
-    data["RSI"] = smoothed_rsi(data["close"])
-    data['FSO'] = fast_k(data)
-    data['SSO'] = slow_k(data['FSO'])
-    data['CCI'] = cci(data)
-    data['ROC'] = RoC(data['close'])
-
-    # Volume.
-    data["VWAP"] = vwap(data)
-    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.
-    data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
-
-    # Trend indicators.
-    data['SMA'] = sma(data['close'])
-    data["EMA"] = ema(data["close"])
-    data['DMA'] = dma(data['SMA'])
-    data['T3MA'] = t3ma(data['close'])
-
-    # Volatility.
-    # data['rolling_std_20'] = rolling_std(data['returns'], 20)
-    bb = bollinger_bands(data['close'])
-    keltner = kc(data)
-    data["percent_b"] = bb.percent_b
-    data["bollinger_bandwidth"] = (bb.upper_band - bb.lower_band) / bb.middle_band
-
-    
-    keltner_position = np.full(len(data), np.nan)
-    np.divide(
-        (data["close"] - keltner.lower_band),
-        keltner.upper_band - keltner.lower_band,
-        out=keltner_position,
-        where=(keltner.upper_band - keltner.lower_band) > 0
+    minutes = (
+            data['real_timestamp'].dt.hour * 60
+            + data['real_timestamp'].dt.minute
     )
 
-    data["keltner_position"] = keltner_position
+    angle = 2 * np.pi * minutes / 1440
 
-    keltner_width = np.full(len(data), np.nan)
-    np.divide(
-            keltner.upper_band - keltner.lower_band,
-            keltner.middle_band,
-            out=keltner_width,
-            where=keltner.middle_band > 0
+    data['cosine_time'] = np.cos(angle)
+    data['sine_time'] = np.sin(angle)
+
+    # Get the NYSE calendar
+    nyse = mcal.get_calendar("NYSE")
+
+    # For each session_end date, get the opening and closing of the NYSE.
+    schedule: pd.DataFrame = nyse.schedule(
+        start_date=data["session_end_date"].min(),
+        end_date=data["session_end_date"].max(),
     )
-    data['keltner_width'] = keltner_width
 
-    data['bollinger_squeeze'] = keltner.bollinger_squeeze
-    data['bollinger_squeeze_ratio'] = keltner.squeeze_ratio
+    schedule = (
+        schedule.rename_axis("session_end_date")
+        .rename(columns={"market_open": "cash_open", "market_close": "cash_close"})
+    )
+    schedule.index = schedule.index.strftime('%Y-%m-%d') # type: ignore
+
+    data = data.join(
+            schedule,
+            on='session_end_date',
+            validate='many_to_one'
+    )
+
+    for column in ('cash_open', 'cash_close'):
+        data[column] = pd.to_datetime(data[column], utc=True)
+
+    data["is_cash_session"] = ((data["cash_open"] <= data["real_timestamp"]) & (
+        data["cash_close"] > data["real_timestamp"]
+    )).astype('int8')
+
+    # Minutes since cash open / until close
+    data['minutes_since_cash_open'] = np.where(
+            data['is_cash_session'].eq(1),
+            (data['real_timestamp'] - data['cash_open']).dt.total_seconds() / 60,
+            0
+    )
+    data['minutes_until_cash_close'] = np.where(
+            data['is_cash_session'].eq(1),
+            (data['cash_close'] - data['real_timestamp']).dt.total_seconds() / 60,
+            0
+    )
+
+    data['log_volume'] = np.log1p(data['volume'])
+    data['log_transactions'] = np.log1p(data['transactions'])
 
     data['ATR'] = atr(data)
     data['normalized_atr'] = atr(data) / data['close']
     data['VR'] = vr(data)
 
-    data['log_volume'] = np.log1p(data['volume'])
+    previous = data.groupby(['ticker'])['close'].shift(-1)
+    previous_5 = data.groupby(['ticker'])['close'].shift(-5)
+
+    data['log_returns_1'] = np.log(data['close'] / previous)
+    data['log_returns_5'] = np.log(data['close'] / previous_5)
+
+    data["ema_40"] = ema(data["close"], period=40)
+
+    ema_slope_atr = np.full(len(data), np.nan)
+    np.divide(
+        data["ema_40"] - data.groupby("ticker", sort=False)["ema_40"].shift(-5),
+        5 * data["ATR"],
+        out=ema_slope_atr,
+        where=data['ATR'].ne(0)
+    )
+    data['ema_slope_atr'] = ema_slope_atr
+
+    ema_spread_atr = np.full(len(data), np.nan)
+    np.divide(
+        ema(data['close'], period=10) - data['ema_40'],
+        data["ATR"],
+        out=ema_spread_atr,
+        where=data['ATR'].ne(0)
+    )
+
+    data['ema_spread_atr'] = ema_spread_atr
+
+    data['signed_efficency_ratio'] = signed_efficiency_ratio(data['close'])
+
+    # signed candle body is C_t - O_t
+    data['signed_candle_body_atr'] = (
+            (data['close'] - data['open'])
+            / data['ATR'].where(data['ATR'].gt(0))
+    )
+
+    candle_range = data['high'] - data['low']
+
+    data['close_location_within_candle_range'] = (
+            (2 * data['close'] - data['high'] - data['low'])
+            / candle_range.where(candle_range.gt(0))
+    )
+
+    # Percentage distance between the close and its EMA / VWAP. More useful for forecasting returns.
+    data["VWAP"] = vwap(data)
+    data['close_to_vwap'] = data['close'] / data['VWAP'] - 1
+    data["close_to_vwap_atr"] = (
+        (data["close"] - data["VWAP"])
+        / data["ATR"].where(data["ATR"].gt(0))
+    )
+
+    # data.loc[missing_prev, 'returns'] = np.nan
+
+    # # Momentum
+    # data["RSI"] = smoothed_rsi(data["close"])
+    # data['FSO'] = fast_k(data)
+    # data['SSO'] = slow_k(data['FSO'])
+    # data['CCI'] = cci(data)
+    # data['ROC'] = RoC(data['close'])
+    #
+    # # Volume.
+    #
+    # # Trend indicators.
+    # data['SMA'] = sma(data['close'])
+    # data['DMA'] = dma(data['SMA'])
+    # data['T3MA'] = t3ma(data['close'])
+    #
+    # # Volatility.
+    # # data['rolling_std_20'] = rolling_std(data['returns'], 20)
+    # bb = bollinger_bands(data['close'])
+    # keltner = kc(data)
+    # data["percent_b"] = bb.percent_b
+    # data["bollinger_bandwidth"] = (bb.upper_band - bb.lower_band) / bb.middle_band
+    #
+    # keltner_position = np.full(len(data), np.nan)
+    # np.divide(
+    #     (data["close"] - keltner.lower_band),
+    #     keltner.upper_band - keltner.lower_band,
+    #     out=keltner_position,
+    #     where=(keltner.upper_band - keltner.lower_band) > 0
+    # )
+    #
+    # data["keltner_position"] = keltner_position
+    #
+    # keltner_width = np.full(len(data), np.nan)
+    # np.divide(
+    #         keltner.upper_band - keltner.lower_band,
+    #         keltner.middle_band,
+    #         out=keltner_width,
+    #         where=keltner.middle_band > 0
+    # )
+    # data['keltner_width'] = keltner_width
+    #
+    # data['bollinger_squeeze'] = keltner.bollinger_squeeze
+    # data['bollinger_squeeze_ratio'] = keltner.squeeze_ratio
+    #
 
     data = data.replace([np.inf, -np.inf], np.nan)
     data = data.reset_index()
 
+    # Generates synthetic timestamps begining on 2000-01-01.
     data = convert_timestamps(data, candle_resolution)
 
     # Write data to parquete files.
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
         path: str = f"{processed_path}/{symbol}-{resolution}-{day}.parquet"
-        prior: pd.DataFrame = load_prior_data(symbol, resolution, day, day, processed_path)
+        prior: pd.DataFrame = load_prior_data(symbol, resolution, day, day, PROCESSED_DATA_DIR)
         if not prior.empty:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
                 subset=['ticker', "real_timestamp"]
@@ -318,7 +418,6 @@ def fill_missing(data: pd.DataFrame, resolution: CandleResolution):
                 product_code, row["session_end_date"], row["session_end_date"]
             )[row["session_end_date"]]
 
-
             candle_length_seconds: int = int(
                 pd.to_timedelta(
                     resolution.length, unit=resolution.to_timedelta_unit()
@@ -354,14 +453,23 @@ def fill_missing(data: pd.DataFrame, resolution: CandleResolution):
             if current_timestamp <= prev_timestamp:
                 raise ValueError("Gap timestamps must be strictly ordered.")
 
-            missing_left = generate_missing_rows(
-                prev_timestamp, prev_end, candle_length_seconds, row['prev_session'], row['ticker']
-            )
-            missing_right = generate_missing_rows(
-                current_begin, current_timestamp, candle_length_seconds, row['session_end_date'], row['ticker']
-            )
+            if prev_session_close != current_session_close:
+                missing_left = generate_missing_rows(
+                    prev_timestamp, prev_end, candle_length_seconds, row['prev_session'], row['ticker']
+                )
+                missing_right = generate_missing_rows(
+                    current_begin, current_timestamp, candle_length_seconds, row['session_end_date'], row['ticker']
+                )
+                missing_rows.extend((*missing_left, *missing_right))
 
-            missing_rows.extend((*missing_left, *missing_right))
+            else:
+                missing_rows.extend(generate_missing_rows(
+                    prev_timestamp,
+                    current_timestamp,
+                    candle_length_seconds,
+                    row["session_end_date"],
+                    row["ticker"],
+                ))
 
     missing_df = pd.DataFrame(missing_rows)
 
@@ -378,7 +486,7 @@ def fill_missing(data: pd.DataFrame, resolution: CandleResolution):
 
     return data
 
-def generate_missing_rows(start, stop, interval_len, session_end_date, ticker):
+def generate_missing_rows(start, stop, interval_len, session_end_date, ticker) -> list[pd.Series]:
     missing_rows = []
     seconds_diff = int((stop - start).total_seconds())
 
