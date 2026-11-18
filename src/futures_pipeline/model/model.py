@@ -250,7 +250,19 @@ def run_model(
         abalation(dataset, pred_length, context_length, quantiles, prediction_interval, resolution)
         return
 
-    covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME, *MISSING]
+    # covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME, *MISSING]
+
+    covariates: list = [
+        *TRADING_ACTIVITY,
+        *PRICE_LOCATION,
+        *SESSION_TIMING,
+        *TIME_GAPS,
+        *MISSING_FLAGS,
+        *NEW_VOLATILITY,
+        *RECENT_RETURNS,
+        *NEW_TREND,
+        *CANDLE_STRUCTURE,
+    ]
 
     # Get the trained model directory.
     output_dir = MODEL_DIR / f"{get_product_code(ticker)}-{resolution}"
@@ -319,7 +331,6 @@ def run_model(
         eval_results = evaluate(e, quantiles, prediction_interval)
         contract_spec: ContractSpec = fetch_contract_spec(test_set_ticker)
 
-
         _, backtest_results = backtest_strategy(
             forecasts, 
             market_data, 
@@ -346,17 +357,15 @@ def run_model(
         )
         return
 
-
     history_df = load_history(ticker, resolution)
 
     context_df = (
-        history_df[["model_timestamp", "ticker", "close", *covariates]]
+        history_df[["model_timestamp", "ticker", "close", 'eval_target_ok', *covariates]]
         .sort_values(['ticker', "model_timestamp"])
         .reset_index(drop=True)
     )
 
     if eval:
-        context_df['eval_target_ok'] = history_df['eval_target_ok']
         if tune:
             # context_lengths = [2 ** n for n in range(5, 14)]
             context_lengths = [2 ** n for n in range(5, 7)]
@@ -452,7 +461,6 @@ def finetune_chronos(
     pipeline = pipeline.fit(**fine_tuning_params)
 
     return pipeline
-
 
 
 # Add button for resolution if it does not exist. May require some tree traversal.
