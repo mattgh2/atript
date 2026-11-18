@@ -72,12 +72,7 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
     # Creates rows: log_elapsed_intervals, has_time_gap
     data = get_time_features(data, candle_resolution)
-
-    # Need this column for fill_missing()
-    data['missing_prev'] = get_missing_gaps(data, symbol, candle_resolution)
     data = fill_missing(data, candle_resolution)
-
-    data = data.drop(columns=['missing_prev'], axis=1)
     data = get_time_features(data, candle_resolution)
 
     data["_session_key"] = pd.to_datetime(
@@ -280,6 +275,14 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     data = data.replace([np.inf, -np.inf], np.nan)
     data = data.reset_index()
 
+    prior: pd.DataFrame = load_prior_data(symbol, resolution, data_dir=PROCESSED_DATA_DIR)
+
+    data = pd.concat([data, prior], ignore_index=True).drop_duplicates(['ticker', 'real_timestamp'])
+
+    data = data.sort_values(
+        "real_timestamp", ascending=False, kind="stable"
+    ).reset_index(drop=True)
+
     # Generates synthetic timestamps begining on 2000-01-01.
     data = convert_timestamps(data, candle_resolution)
 
@@ -287,14 +290,6 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
         path: str = f"{processed_path}/{symbol}-{resolution}-{day}.parquet"
-        prior: pd.DataFrame = load_prior_data(symbol, resolution, day, day, PROCESSED_DATA_DIR)
-        if not prior.empty:
-            rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
-                subset=['ticker', "real_timestamp"]
-            )
-        rows = rows.sort_values(
-            "real_timestamp", ascending=False, kind="stable"
-        ).reset_index(drop=True)
         rows.to_parquet(path, index=False)
         print(f"Wrote {path} ({rows.shape[0]:,} rows)")
 
@@ -327,149 +322,54 @@ def get_time_features(df: pd.DataFrame, resolution: CandleResolution) -> pd.Data
 
     return df
 
-def get_missing_gaps(data: pd.DataFrame, symbol: str, candle_resolution: CandleResolution) -> np.ndarray:
-
-    prev_observed = data.groupby('ticker', sort=False)['real_timestamp'].shift(-1)
-
-    session_hours: dict[str, list] = fetch_session_hours(
-        get_product_code(symbol),
-        data["session_end_date"].min(),
-        data["session_end_date"].max(),
-    )
-
-    # This will fail for 2025-01-09, Going to need to drop the session.
-    if missing := set(data['session_end_date'].unique()) - set(session_hours):
-        raise ValueError(f"Missing session schedules for: {sorted(missing)}")
-
-    trading_intervals = sorted(
-            (opened_at, closed_at)
-            for hours in session_hours.values()
-            for opened_at, closed_at in hours
-    )
-
-    interval = pd.to_timedelta(
-        candle_resolution.length, unit=candle_resolution.to_timedelta_unit()
-    )
-
-    def contains_missing_candle(older: pd.Timestamp, current: pd.Timestamp) -> bool:
-        # 2026-09-01 17:00:00-05:00 
-        target = pd.Timestamp(datetime.combine(
-                date.fromisoformat("2026-09-01"),
-                time(17,0,0)
-        ),tz="America/Chicago") 
-
-        # if current == target:
-        #     breakpoint()
-
-        for opened_at, closed_at in trading_intervals:
-            if closed_at <= older or opened_at >= current:
-                continue
-            if older < opened_at:
-                candidate = opened_at
-            else:
-                steps = ((older - opened_at) // interval) + 1
-                candidate = opened_at + steps * interval
-            if candidate < current and candidate < closed_at:
-                return True
-        return False
-
-    missing_prev = np.zeros(len(data), dtype=bool)
-    gap_positions = np.flatnonzero(
-            data['has_time_gap'].to_numpy(dtype=bool)
-    )
-
-    for position in gap_positions:
-        older = prev_observed.iloc[position]
-        current = data['real_timestamp'].iloc[position]
-        if pd.notna(older):
-            missing_prev[position] = contains_missing_candle(older,current)
-
-    return missing_prev
-
 """
 Bound to the start or the end of a session depending
 on whether the first candle is missing or the last candle is missing
 If last, then current = min(prev_session_end, current). If first, then prev = max(current_session_start, prev)
 """
 def fill_missing(data: pd.DataFrame, resolution: CandleResolution):
-    if 'missing_prev' not in data.columns:
-        raise ValueError('Missing missing_prev column.')
 
+    step = pd.Timedelta(
+            resolution.length,
+            unit=resolution.to_timedelta_unit()
+    )
     # Fill missing rows with nan.
     missing_rows: list[pd.Series] = []
-    for ticker, df in data.groupby('ticker', sort=False):
-        df['prev_timestamp'] = df['real_timestamp'].shift(-1)
-        df['prev_session'] = df['session_end_date'].shift(-1)
+    for ticker, contract_df in data.groupby('ticker', sort=False):
+        first = contract_df['real_timestamp'].min()
+        last = contract_df['real_timestamp'].max()
+        observed = pd.DatetimeIndex(contract_df['real_timestamp'])
 
-        for idx, row in df.iterrows():
-            if not row['missing_prev']:
-                continue
+        hours = fetch_session_hours(
+                get_product_code(str(ticker)),
+                contract_df['session_end_date'].min(),
+                contract_df['session_end_date'].max(),
+        )
 
-            prev_timestamp = pd.Timestamp(row['prev_timestamp'])
-            current_timestamp = pd.Timestamp(row['real_timestamp'])
-
-            product_code = get_product_code(row['ticker'])
-            _, prev_session_close = fetch_session_dates(
-                product_code, row['prev_session'], row["prev_session"]
-            )[row["prev_session"]]
-
-            # Need to pass a product_code
-            current_session_open, current_session_close = fetch_session_dates(
-                product_code, row["session_end_date"], row["session_end_date"]
-            )[row["session_end_date"]]
-
-            candle_length_seconds: int = int(
-                pd.to_timedelta(
-                    resolution.length, unit=resolution.to_timedelta_unit()
-                ).total_seconds()
-            )
-
-            prev_end = prev_timestamp
-            current_begin = current_timestamp
-
-            # Handles case where the current timestamp is the first candle of a session,
-            # thus previous timestamp is from the previous session.
-            # Avoids creating expected rows during a scheduled close.
-
-            # Missing candles are either the first or last in a session.
-            if prev_session_close != current_session_close:
-
-                # Missing both the prev sessions final candles and the current sessions opening candles.
-                if current_timestamp > current_session_open and prev_timestamp < prev_session_close:
-                    prev_end = prev_session_close
-                    current_begin = current_session_open - timedelta(seconds=candle_length_seconds)
-
-                # If the current timestamp is not the opening candle,
-                # then the current sessions starting candles are missing.
-                elif current_timestamp > current_session_open:
-                    current_begin = current_session_open
-
-                # The prev sessions final candles must be missing.
-                else:
-                    prev_end = prev_session_close
-
-            if pd.isna(prev_timestamp) or pd.isna(current_timestamp):
-                raise ValueError("Gap has a missing timestamp.")
-            if current_timestamp <= prev_timestamp:
-                raise ValueError("Gap timestamps must be strictly ordered.")
-
-            if prev_session_close != current_session_close:
-                missing_left = generate_missing_rows(
-                    prev_timestamp, prev_end, candle_length_seconds, row['prev_session'], row['ticker']
+        for session_date, intervals in hours.items():
+            for opened, closed in intervals:
+                if closed <= first or opened > last:
+                    continue
+        
+                expected = pd.date_range(
+                        opened,
+                        closed,
+                        freq=step,
+                        inclusive='left'
                 )
-                missing_right = generate_missing_rows(
-                    current_begin, current_timestamp, candle_length_seconds, row['session_end_date'], row['ticker']
-                )
-                missing_rows.extend((*missing_left, *missing_right))
+                expected = expected[(expected >= first) & (expected <= last)]
 
-            else:
-                missing_rows.extend(generate_missing_rows(
-                    prev_timestamp,
-                    current_timestamp,
-                    candle_length_seconds,
-                    row["session_end_date"],
-                    row["ticker"],
-                ))
+                missing = expected.difference(observed)
+                missing_rows.extend(
+                        pd.Series({
+                            'ticker': ticker,
+                            'real_timestamp': timestamp,
+                            'session_end_date': session_date,
+                            'was_missing': 1,
+                            'has_time_gap': 0,
+                        })
+                        for timestamp in missing
+                )
 
     missing_df = pd.DataFrame(missing_rows)
 
@@ -485,25 +385,6 @@ def fill_missing(data: pd.DataFrame, resolution: CandleResolution):
     data['has_time_gap'] = data['has_time_gap'].astype(np.int8)
 
     return data
-
-def generate_missing_rows(start, stop, interval_len, session_end_date, ticker) -> list[pd.Series]:
-    missing_rows = []
-    seconds_diff = int((stop - start).total_seconds())
-
-    missing_timestamps = (
-        start + timedelta(seconds=offset)
-        for offset in range(
-            interval_len, seconds_diff, interval_len
-        )
-    )
-
-    for ts in missing_timestamps:
-        missing_row = pd.Series(
-            [session_end_date, ts, ticker, 0, 1],
-            index=["session_end_date", "real_timestamp", "ticker", "has_time_gap", "was_missing"],
-        )
-        missing_rows.append(missing_row)
-    return missing_rows
 
 
 def audit_session_coverage(
@@ -568,6 +449,7 @@ def audit_session_coverage(
             group["was_missing"].eq(0),
             "real_timestamp",
         ]
+
         synthetic_timestamps = group.loc[
             group["was_missing"].eq(1),
             "real_timestamp",
