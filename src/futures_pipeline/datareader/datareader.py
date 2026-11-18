@@ -281,7 +281,7 @@ def load_prior_data(
     assert data_dir is not None, "data_dir must be provided when train=False"
 
     data_dir /= f"{symbol}-{resolution}"
-    if not data_dir.is_dir():
+    if not data_dir.is_dir() or len(list(data_dir.iterdir())) == 0:
         return pd.DataFrame()
 
     if not begin:
