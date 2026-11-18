@@ -47,7 +47,7 @@ def fetch_context(
     data_dir.mkdir(parents=True, exist_ok=True)
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
     for day, rows in data.groupby(dates.dt.date):
-        prior: pd.DataFrame = load_prior_data(args.symbol, args.resolution, day, day, data_dir)
+        prior: pd.DataFrame = load_prior_data(args.symbol, args.resolution, day, day, RAW_DATA_DIR)
 
         if not prior.empty:
             rows = pd.concat([rows, prior], ignore_index=True).drop_duplicates(
