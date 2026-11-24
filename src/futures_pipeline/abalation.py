@@ -51,7 +51,8 @@ def run_experiment(
     context_length: int,
     quantiles,
     prediction_interval,
-    resolution
+    resolution,
+    windows_per_batch: int = 12
 ) -> tuple[float, Chronos2Pipeline, Path, Sequence[str]]:
     train_df, test_df, validation_df = dataset
 
@@ -61,6 +62,7 @@ def run_experiment(
     )
 
     pipeline = load_chronos()
+    batch_size = windows_per_batch * (1 + len(covariates))
 
     pipeline = pipeline.fit(
             inputs=train_input,
@@ -69,7 +71,7 @@ def run_experiment(
             context_length=context_length,
             learning_rate=1e-6,
             num_steps=1000,
-            batch_size=256,
+            batch_size=batch_size,
             finetune_mode='full',
             callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
             eval_steps=100,
