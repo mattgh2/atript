@@ -80,6 +80,8 @@ def web_scaffolding():
                 a("context_lengths", href="context_lengths.html")
                 br()
                 a("metrics", href="context_length_metrics.html")
+                br()
+                a("randomized search", href='randomized_search.html')
 
         with open(hyperparam_page, 'w') as f:
             f.write(str(hyperparam_doc))
