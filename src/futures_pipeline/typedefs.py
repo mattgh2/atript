@@ -140,7 +140,7 @@ class BacktestResults:
             f"Gross profit: ${self.gross_profit:,.2f}",
             f"Gross loss: ${self.gross_loss:,.2f}",
             f"Total missing rows: {self.missing_count}",
-            f"Net Sharpe per window: {self.net_sharpe:.2f}",
+            f"Net Sharpe per window: {self.net_sharpe:.6f}",
         ]
 
     def display_results(self) -> None:
