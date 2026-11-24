@@ -12,12 +12,11 @@ from .indicators.volume import vwap
 from .preproc_util import get_returns
 from datetime import timedelta, datetime, date, time
 import pandas_market_calendars as mcal
+from shutil import rmtree
 
 def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
     processed_path: Path = Path(PROCESSED_DATA_DIR) / f"{symbol}-{resolution}"
-    processed_path.mkdir(exist_ok=True, parents=True)
-
     raw_dir: Path | None = None
 
     if not train:
@@ -28,6 +27,7 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     if data.empty:
         print(f"No data available for {symbol}.")
         return
+
 
     print(f"Processing {data.shape[0]} records for {symbol}.")
 
@@ -275,9 +275,9 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
     data = data.replace([np.inf, -np.inf], np.nan)
     data = data.reset_index()
 
-    prior: pd.DataFrame = load_prior_data(symbol, resolution, data_dir=PROCESSED_DATA_DIR)
+    # prior: pd.DataFrame = load_prior_data(symbol, resolution, data_dir=PROCESSED_DATA_DIR)
 
-    data = pd.concat([data, prior], ignore_index=True).drop_duplicates(['ticker', 'real_timestamp'])
+    # data = pd.concat([data, prior], ignore_index=True).drop_duplicates(['ticker', 'real_timestamp'])
 
     data = data.sort_values(
         "real_timestamp", ascending=False, kind="stable"
@@ -285,6 +285,10 @@ def preprocess(symbol: str, resolution: str, train: bool) -> None:
 
     # Generates synthetic timestamps begining on 2000-01-01.
     data = convert_timestamps(data, candle_resolution)
+
+    if processed_path.exists():
+        rmtree(processed_path)
+    processed_path.mkdir(exist_ok=True, parents=True)
 
     # Write data to parquete files.
     dates = pd.Series(data["session_end_date"], dtype="datetime64[ns]")
