@@ -345,7 +345,7 @@ Loads a tickers most recent n observations from disk.
 @param ticker The ticker to use.
 @param n The number of observations to load from disk.
 """
-def load_last_n(data_dir: Path, ticker: str, n: int) -> pd.DataFrame | None:
+def load_last_n(data_dir: Path, ticker: str, resolution, n: int) -> pd.DataFrame | None:
     if not data_dir.is_dir():
         return None
 
@@ -355,7 +355,7 @@ def load_last_n(data_dir: Path, ticker: str, n: int) -> pd.DataFrame | None:
         return None
 
     files.sort(
-        key=lambda file: date.fromisoformat(file.stem.removeprefix(f"{ticker}-")),
+        key=lambda file: date.fromisoformat(file.stem.removeprefix(f"{ticker}-{resolution}-")),
         reverse=True,
     )
 
@@ -446,7 +446,7 @@ def fetch_latest(
     data_dir = RAW_DATA_DIR / f"{ticker}-{resolution}"
 
     # Load the latest observations from disk.
-    last_observation: pd.DataFrame | None = load_last_n(data_dir, ticker, 1)
+    last_observation: pd.DataFrame | None = load_last_n(data_dir, ticker, resolution, 1)
 
     if last_observation is None:
         print("No history for this ticker. Use --lookback or --range instead.")
