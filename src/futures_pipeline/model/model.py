@@ -20,6 +20,14 @@ from collections.abc import Sequence, Mapping
 from .backtest import backtest_strategy
 from .evaluate import evaluate, report_eval, predict_and_evaluate, walk_forward_predict
 from .features import *
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import ParameterSampler
+from scipy.stats import loguniform
+from itertools import chain
+from .evaluate import NoValidWindowsError
+from typing import Literal
+
+# Change the evaluation metrics to use the quantiles instead of the point forecast to assess model strength.
 
 Log = Logger(name='log', level=1)
 
@@ -233,9 +241,11 @@ def run_model(
     train: bool = False,
     zero_shot: bool = False,
     eval: bool=False,
-    tune: bool = False,
+    tune_mode: Literal['None', 'zero_shot', 'finetuned'] = "None",
     _abalation: bool = False
 ) -> None:
+    if tune_mode != 'None' and train:
+        raise ValueError("Cannot pass --train with --tune.")
 
     if _abalation:
         dataset = load_and_split_training_set(
@@ -250,8 +260,6 @@ def run_model(
         abalation(dataset, pred_length, context_length, quantiles, prediction_interval, resolution)
         return
 
-    # covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME, *MISSING]
-
     covariates: list = [
         *TRADING_ACTIVITY,
         *PRICE_LOCATION,
@@ -263,6 +271,45 @@ def run_model(
         *NEW_TREND,
         *CANDLE_STRUCTURE,
     ]
+
+    # covariates: list = [*VOLATILITY, *TREND, *MOMENTUM, *VOLUME, *TIME, *MISSING]
+
+    if tune_mode == 'finetuned':
+        num_features = 1 + len(covariates)
+        param_space = {
+                'context_length': [128, 256, 512, 1024, 2048],
+                'learning_rate': loguniform(1e-7, 3e-5),
+                'batch_size': [num_features * x for x in [4,8,16]],
+        }
+
+        product_code = get_product_code(ticker)
+
+        train_df = load_prior_data(
+            symbol=product_code, 
+            resolution=resolution,
+            data_dir = PROCESSED_DATA_DIR
+        )
+    
+        if train_df.empty:
+            raise RuntimeError("Missing training set.")
+    
+        train_df = train_df.sort_values(['ticker','real_timestamp'])
+    
+        train_df['session_end_date'] = pd.to_datetime(train_df['session_end_date'])
+
+        hyperparam_tuning(
+                train_df,
+                param_space,
+                pred_length,
+                resolution,
+                covariates,
+                quantiles,
+                prediction_interval,
+                n_iter=10,
+                hf_token=hf_token
+        )
+        return
+
 
     # Get the trained model directory.
     output_dir = MODEL_DIR / f"{get_product_code(ticker)}-{resolution}"
@@ -297,7 +344,7 @@ def run_model(
             finetune_mode="lora",
             learning_rate=1e-5,
             num_steps=1000,
-            batch_size=20,
+            batch_size=len(covariates) + 1,
             callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
             eval_steps=100,
             save_steps=100,
@@ -364,34 +411,54 @@ def run_model(
         .sort_values(['ticker', "model_timestamp"])
         .reset_index(drop=True)
     )
+    timestamps = history_df[['model_timestamp', 'real_timestamp', 'ticker']]
 
-    if eval:
-        if tune:
-            # context_lengths = [2 ** n for n in range(5, 14)]
-            context_lengths = [2 ** n for n in range(5, 7)]
-            tune_context_length(
-                    pipeline,
-                    context_lengths,
-                    context_df,
-                    history_df,
-                    pred_length,
-                    quantiles,
-                    prediction_interval,
-                    zero_shot,
-                    resolution
-            )
-        else:
-            eval_results = predict_and_evaluate(
-                    pipeline,
-                    context_df,
-                    history_df,
-                    pred_length,
-                    context_length,
-                    quantiles,
-                    prediction_interval,
-            )
+    if tune_mode == 'zero_shot':
+        context_lengths = [2 ** n for n in range(5, 14)]
+        # context_lengths = [2 ** n for n in range(5, 7)]
+        tune_context_length(
+                pipeline,
+                context_lengths,
+                context_df,
+                history_df,
+                pred_length,
+                quantiles,
+                prediction_interval,
+                zero_shot,
+                resolution
+        )
 
-            report_eval(eval_results)
+
+    else:
+        forecasts = walk_forward_predict(
+                pipeline,
+                context_df,
+                pred_length,
+                pred_length,
+                context_length,
+                quantiles,
+        )
+
+        e = forecasts.merge(
+                timestamps,
+                on=['ticker', "model_timestamp"],
+                how="inner"
+        )
+
+        eval_results = evaluate(e, quantiles, prediction_interval)
+        contract_spec = fetch_contract_spec(ticker)
+
+        _, backtest_results = backtest_strategy(
+            forecasts, 
+            history_df, 
+            prediction_interval, 
+            contract_spec, 
+            pred_length
+        )
+
+        report_eval(eval_results)
+        backtest_results.display_results()
+
 
 
 """
@@ -481,6 +548,9 @@ def tune_context_length(
     resolution: str
 ) -> None:
 
+    if len(context_df['ticker'].unique()) != 1:
+        raise ValueError("Multi-ticker context is not supported.")
+    ticker = context_df['ticker'].iloc[0]
 
     base_path = WEB_PATH / ("zeroshot" if zero_shot else "finetuned") / f"hyperparameter_tuning"
     update_resolution_page(
@@ -501,7 +571,8 @@ def tune_context_length(
 
     mae_scores = []
     directional_acc = []
-    figs: list[tuple[Path, list[str]]] = []
+    net_sharpes = []
+    figs: list[tuple[Path, Sequence[str]]] = []
 
     fig_path: Path = FIGURE_PATH / f"hyperparam_optimization/inference/"
     fig_path /= ("zeroshot" if zero_shot else "finetuned") 
@@ -516,40 +587,43 @@ def tune_context_length(
     save_path.mkdir(parents=True, exist_ok=True)
 
     for context_length in param_values:
-        eval_results: EvaluationResult = predict_and_evaluate(
-            pipeline,
-            context_df,
-            history_df,
-            pred_length,
-            context_length,
+
+        forecasts = walk_forward_predict(
+            pipeline, 
+            context_df, 
+            pred_length, 
+            pred_length, 
+            context_length, 
             quantiles,
-            prediction_interval,
-            num_pred_windows,
+            num_windows=num_pred_windows,
+            start_pred=max(param_values)
+        )
+
+        e = forecasts.merge(
+                history_df[['real_timestamp', 'model_timestamp', 'ticker']],
+                on=['ticker', "model_timestamp"],
+                how="inner"
+        )
+
+        eval_results = evaluate(e, quantiles, prediction_interval)
+        contract_spec: ContractSpec = fetch_contract_spec(ticker)
+
+        _, backtest_results = backtest_strategy(
+            forecasts, 
+            history_df, 
+            prediction_interval, 
+            contract_spec, 
+            pred_length
         )
 
         current_output: list[str] = []
 
+        net_sharpes.append(backtest_results.net_sharpe)
         mae_scores.append(eval_results.mae)
         directional_acc.append(eval_results.directional_accuracy)
 
         current_output.append(f"context length: {context_length}")
-        current_output.append(
-            f"directional accuracy: {eval_results.directional_accuracy:.2f}"
-        )
-        current_output.append(f"MAE: {eval_results.mae:.2f}")
-        current_output.append(
-            f"MAE improvement over baseline: {eval_results.mae_skill:.2%}"
-        )
-        current_output.append(f"PI coverage: {eval_results.pi_coverage:.2%}")
-        current_output.append(f"Mean interval width: {eval_results.mean_interval_width}")
-
-        current_output.append("Quantile calibration:")
-        for q, v in eval_results.quantile_calibration.items():
-            current_output.append(f"\tq={q}: {v}")
-
-        current_output.append(f"Calibration Error:")
-        for q, v in eval_results.calibration_error.items():
-            current_output.append(f"\tq={q}: {v}")
+        current_output.extend([*backtest_results.to_strings(), '\n', *eval_results.to_strings()])
 
         current_fig_path = fig_path / f"{context_length}-predictions.png"
 
@@ -562,6 +636,15 @@ def tune_context_length(
         )
 
         figs.append((current_fig_path, current_output))
+
+    net_sharpe_perf_path = fig_path / "net_sharpe-performance.png"
+    parameter_performance(
+            "Context Length",
+            "net sharpe",
+            param_values,
+            net_sharpes,
+            net_sharpe_perf_path
+    )
 
     mae_perf_path = fig_path / "mae-performance.png"
     parameter_performance(
@@ -583,6 +666,7 @@ def tune_context_length(
 
     save_predictions_file = save_path / "predictions.html"
     save_metrics_file: Path = save_path / "metrics.html"
+
     display_figs_on_page(
         figs,
         save_predictions_file,
@@ -590,7 +674,262 @@ def tune_context_length(
     )
 
     display_figs_on_page(
-        [(mae_perf_path, []), (dir_acc_perf_path, [])],
+        [(mae_perf_path, []), (dir_acc_perf_path, []), (net_sharpe_perf_path, [])],
         save_metrics_file,
         base_path / "context_length_metrics.html",
+    )
+
+
+# Randomized search. Walk forward CV for each configuration.
+# Hold out a contract for final configuration evaluation.
+def hyperparam_tuning(
+    train_df,
+    param_space: dict[str, list],
+    pred_length,
+    resolution,
+    covariates,
+    quantiles,
+    prediction_interval,
+    n_iter,
+    hf_token=None,
+):
+    base_path = (
+        FINETUNED_PATH
+        / "hyperparameter_tuning"
+    )
+
+    base_pipeline = Chronos2Pipeline.from_pretrained(
+            "amazon/chronos-2", device_map="cuda", token=hf_token
+    )
+
+    # Hold out final contract for evaluation.
+    final_contract = train_df.loc[
+        train_df["session_end_date"].eq(train_df["session_end_date"].max()), "ticker"
+    ].iloc[0]
+
+    test_df = train_df.loc[
+            train_df['ticker'].eq(final_contract)
+    ]
+    train_df = train_df.loc[
+            train_df['ticker'].ne(final_contract)
+    ]
+
+    row_month = pd.to_datetime(
+            train_df['session_end_date']
+    ).dt.to_period("M")
+
+    months: np.ndarray = pd.Index(row_month.unique()).sort_values().to_numpy()
+
+    splitter = TimeSeriesSplit(n_splits=3, test_size=1)
+
+    candidates = ParameterSampler(
+            param_space,
+            n_iter=n_iter,
+            random_state=42
+    )
+
+    pred_origin_start = max(param_space['context_length'])
+
+    figs: list[tuple[Path, Sequence[str]]] = []
+    for count, params in enumerate(candidates):
+        prediction_dfs: list[pd.DataFrame] = []
+        backtest_dfs: list[pd.DataFrame] = []
+        total_missing = 0
+        for train_idx, val_idx in splitter.split(months):
+
+            fold_train_df = train_df.loc[row_month.isin(months[train_idx[:-1]])]
+            finetune_val_df = train_df.loc[row_month.eq(months[train_idx[-1]])]
+            val_df = train_df.loc[row_month.isin(months[val_idx])]
+
+            training_inputs = build_training_input(
+                    fold_train_df, covariates, pred_length
+            )
+
+            validation_inputs, _ = build_validation_input(
+                finetune_val_df,
+                covariates,
+                pred_length,
+                params['context_length']
+            )
+
+            fitted_pipeline = base_pipeline.fit(
+                    inputs=training_inputs,
+                    validation_inputs=validation_inputs,
+                    prediction_length=pred_length,
+                    context_length=params['context_length'],
+                    learning_rate=params['learning_rate'],
+                    num_steps=1000,
+                    batch_size=params['batch_size'],
+                    finetune_mode='full',
+                    callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+            )
+
+            # val_df month could be on a roll-month, in which case there
+            # is more than one ticker present in the DataFrame. Need to group by ticker.
+            prediction_df: pd.DataFrame = pd.DataFrame()
+            backtest_df: pd.DataFrame = pd.DataFrame()
+            for ticker, contract_df in val_df.groupby('ticker', sort=False):
+                contract_spec = fetch_contract_spec(ticker)
+
+                extra_context_df: pd.DataFrame = train_df.loc[row_month.isin(months[train_idx])]
+                ticker_rows = extra_context_df.loc[extra_context_df['ticker'].eq(ticker)]
+                extra_context_df = ticker_rows.sort_values("real_timestamp").tail(
+                    pred_origin_start
+                )
+
+                contract_df = (
+                    pd.concat([contract_df, extra_context_df], ignore_index=True)
+                    .sort_values("real_timestamp")
+                    .reset_index(drop=True)
+                )
+
+                context_df = (
+                    contract_df[
+                        [
+                            "ticker",
+                            "model_timestamp",
+                            "close",
+                            "eval_target_ok",
+                            *covariates,
+                        ]
+                    ]
+                    .sort_values("model_timestamp")
+                    .reset_index(drop=True)
+                )
+
+                try:
+                     preds = walk_forward_predict(
+                         fitted_pipeline,
+                         context_df,
+                         pred_length,
+                         pred_length,
+                         params["context_length"],
+                         quantiles,
+                         start_pred=pred_origin_start
+                     )
+                except NoValidWindowsError:
+                    Log.warning('Skipping %s: no valid scoring windows', ticker)
+                    continue
+
+                bt_df, summary  = backtest_strategy(
+                        preds,
+                        contract_df,
+                        prediction_interval,
+                        contract_spec,
+                        pred_length
+                )
+                total_missing += summary.missing_count
+
+                backtest_df = pd.concat([backtest_df, bt_df], ignore_index=True)
+                prediction_df = pd.concat([prediction_df, preds], ignore_index=True)
+
+            if prediction_df.empty:
+                raise ValueError(f'No contracts have valid scoring windows for {months[val_idx[0]]}')
+
+            prediction_df = prediction_df.sort_values('model_timestamp').reset_index(drop=True)
+            backtest_df = backtest_df.sort_values('model_timestamp').reset_index(drop=True)
+
+            prediction_df = prediction_df.merge(
+                    train_df[['model_timestamp', 'real_timestamp', 'ticker']],
+                    on=['ticker', 'model_timestamp'],
+                    how='inner',
+                    validate='one_to_one'
+            )
+
+            prediction_dfs.append(prediction_df)
+            backtest_dfs.append(backtest_df)
+
+        all_predictions = pd.concat(
+                prediction_dfs,
+                ignore_index=True
+        )
+        signal_ledger = pd.concat(
+                backtest_dfs,
+                ignore_index=True
+        )
+
+        eval_results = evaluate(
+                all_predictions,
+                quantiles,
+                prediction_interval
+        )
+
+        trade_ledger = signal_ledger.loc[
+                signal_ledger['signal'].ne(0)
+        ]
+
+        allocated_capital: float = 1000.0
+        risk_free_per_window: float = 0.0
+        returns: pd.Series = signal_ledger['net_pnl'] / allocated_capital
+        excess: pd.Series = returns - risk_free_per_window
+        std = excess.std(ddof=1)
+        net_sharpe_per_window = excess.mean() / std if len(excess) >= 2 and std > 0 else float('nan')
+
+        backtest_summary = BacktestResults(
+            trade_count=len(trade_ledger),
+            net_pnl=trade_ledger["net_pnl"].sum(),
+            win_rate=trade_ledger["net_pnl"].gt(0).mean(),
+            average_pnl=trade_ledger["net_pnl"].mean(),
+            gross_profit=trade_ledger.loc[
+                trade_ledger["net_pnl"].gt(0), "net_pnl"
+            ].sum(),
+            gross_loss=-trade_ledger.loc[
+                trade_ledger["net_pnl"].lt(0), "net_pnl"
+            ].sum(),
+            missing_count=total_missing,
+            net_sharpe=net_sharpe_per_window
+        )
+
+        output: list[str] = list(
+            chain(
+                [
+                    "Configuration:",
+                    *[
+                        f"{param_name}: {param_value}"
+                        for param_name, param_value in params.items()
+                    ],
+                ],
+                eval_results.to_strings(),
+                ["\n"],
+                backtest_summary.to_strings(),
+            )
+        )
+        first_contract = all_predictions.loc[
+                all_predictions['real_timestamp'].idxmin(), 'ticker'
+        ]
+
+        plot_df = all_predictions.loc[all_predictions['ticker'].eq(first_contract)].head(200)
+        plot_y_pred = plot_df['predictions'].head(200)
+        plot_y_true = plot_df['close'].head(200)
+        plot_lower = plot_df[str(prediction_interval.lower)].head(200)
+        plot_upper = plot_df[str(prediction_interval.upper)].head(200)
+
+        
+        fig_path: Path = FIGURE_PATH / f"abalation/finetuned/{resolution}"
+        fig_path.mkdir(exist_ok=True, parents=True)
+        current_fig_path = fig_path / f"{count}-predictions.png"
+
+
+        plot_predictions(
+            plot_y_pred,
+            plot_y_true,
+            plot_lower,
+            plot_upper,
+            current_fig_path,
+        )
+
+        figs.append((current_fig_path, output))
+
+    update_resolution_page(
+        base_path / "randomized_search.html",
+        resolution,
+        base_path / f"{resolution}/results.html",
+        base_path / "hyperparameters.html"
+    )
+    (base_path / resolution).mkdir(exist_ok=True, parents=True)
+
+    display_figs_on_page(
+        figs, 
+        base_path / resolution / "results.html", 
+        base_path / "randomized_search.html"
     )
