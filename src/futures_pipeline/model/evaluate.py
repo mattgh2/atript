@@ -30,6 +30,10 @@ Metrics:
 
 @returns  An ``EvaluationResult`` containing the evaluation metrics.
 """
+
+class NoValidWindowsError(ValueError):
+    ...
+
 def evaluate(
         eval: pd.DataFrame, quantiles: list[float], prediction_interval: PredictionInterval
 ) -> EvaluationResult:
@@ -214,14 +218,19 @@ def predict_and_evaluate(
     quantiles,
     prediction_interval,
     num_windows: int | None = None,
+    start_pred: int = -1
 ) -> EvaluationResult:
+
+    start_pred = max(context_length, start_pred)
+
     e = walk_forward_predict(pipeline, 
             context_df, 
             pred_length, 
             pred_length, 
             context_length, 
             quantiles,
-            num_windows
+            num_windows,
+            start_pred
     )
     e = e.merge(
                 history_df[['model_timestamp','real_timestamp', 'ticker']],
@@ -279,7 +288,7 @@ def predict_chronos(
 
 
 """
-Performs walk-forward evaluation using an expanding window to obtain a set of evaluation data points.
+Performs walk-forward prediction using an expanding window to obtain a set of evaluation data points.
 
 @param pipline A chronos2 pipeline instance.
 @param context_df the set of observations fed to the model.
@@ -299,14 +308,17 @@ def walk_forward_predict(
     context_length: int,
     quantiles: list[float],
     num_windows: int | None = None,
+    start_pred: int = -1
 ) -> pd.DataFrame:
+
+    start_pred = max(context_length, start_pred)
 
     if context_df['ticker'].nunique() != 1:
         raise ValueError("Walk-forward prediction requires exactly one ticker.")
     results: list[pd.DataFrame] = []
 
     last = context_df.shape[0] - horizon
-    for window_len in tqdm(range(context_length + 1, last + 1, step)):
+    for window_len in tqdm(range(start_pred, last + 1, step)):
 
         if num_windows is not None and num_windows <= 0:
             break
@@ -350,6 +362,9 @@ def walk_forward_predict(
 
         if num_windows is not None:
             num_windows -= 1
+
+    if len(results) == 0:
+        raise NoValidWindowsError("No valid evaluation windows.")
 
     df = pd.concat(results, ignore_index=True)
     return df
