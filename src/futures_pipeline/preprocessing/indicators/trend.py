@@ -70,7 +70,7 @@ def wma(prices: pd.Series, period: int = 14) -> pd.Series:
         weight_sum = weights.sum()
 
         for i in range(len(price) - period + 1):
-            window = price.iloc[i: i + period]
+            window = price.iloc[i: i + period].to_numpy()
             W[i] = np.sum(window * weights)  / weight_sum
 
         output[positions] = W
