@@ -70,7 +70,6 @@ def create_model_parser(subparsers: _SubParsersAction, common_args: ArgumentPars
     parser.add_argument("--abalation", "-A", action="store_true")
     parser.add_argument("--no-store-weights", '-S', action="store_true")
 
-
 def create_fees_parser(subparsers: _SubParsersAction) -> None:
     parser: ArgumentParser = subparsers.add_parser("fees")
 

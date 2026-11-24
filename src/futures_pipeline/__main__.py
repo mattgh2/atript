@@ -74,6 +74,12 @@ def main():
                     "upper": args.prediction_interval[1],
                 }
             )
+            tune_mode = 'None'
+            if args.tune and args.zero_shot:
+                tune_mode = 'zero_shot'
+            elif args.tune:
+                tune_mode = 'finetuned'
+
             run_model(
                     args.symbol, 
                     args.resolution,
@@ -84,7 +90,7 @@ def main():
                     hf_token=hf_token, 
                     train=args.train,
                     zero_shot=args.zero_shot,
-                    tune=args.tune,
+                    tune_mode=tune_mode,
                     _abalation=args.abalation,
                     store_weights= not args.no_store_weights,
                     eval=args.eval
