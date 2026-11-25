@@ -26,6 +26,9 @@ from scipy.stats import loguniform
 from itertools import chain
 from .evaluate import NoValidWindowsError
 from typing import Literal
+import torch
+import gc
+from tempfile import TemporaryDirectory
 
 # Change the evaluation metrics to use the quantiles instead of the point forecast to assess model strength.
 
@@ -460,7 +463,6 @@ def run_model(
         backtest_results.display_results()
 
 
-
 """
 Loads a Chronos model from local storage or Hugging Face.
 
@@ -752,17 +754,24 @@ def hyperparam_tuning(
                 params['context_length']
             )
 
-            fitted_pipeline = base_pipeline.fit(
-                    inputs=training_inputs,
-                    validation_inputs=validation_inputs,
-                    prediction_length=pred_length,
-                    context_length=params['context_length'],
-                    learning_rate=params['learning_rate'],
-                    num_steps=1000,
-                    batch_size=params['batch_size'],
-                    finetune_mode='full',
-                    callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
-            )
+            checkpoint_root = PROJECT_ROOT / 'chronos-tmp'
+            checkpoint_root.mkdir(exist_ok=True, parents=True)
+
+            with TemporaryDirectory(
+                dir=checkpoint_root, prefix=f"trial-{count}"
+            ) as fold_output_dir:
+                fitted_pipeline = base_pipeline.fit(
+                        inputs=training_inputs,
+                        validation_inputs=validation_inputs,
+                        prediction_length=pred_length,
+                        context_length=params['context_length'],
+                        learning_rate=params['learning_rate'],
+                        num_steps=1000,
+                        batch_size=params['batch_size'],
+                        finetune_mode='full',
+                        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+                        output_dir=fold_output_dir
+                )
 
             # val_df month could be on a roll-month, in which case there
             # is more than one ticker present in the DataFrame. Need to group by ticker.
@@ -798,7 +807,7 @@ def hyperparam_tuning(
                 )
 
                 try:
-                     preds = walk_forward_predict(
+                    preds = walk_forward_predict(
                          fitted_pipeline,
                          context_df,
                          pred_length,
@@ -822,6 +831,11 @@ def hyperparam_tuning(
 
                 backtest_df = pd.concat([backtest_df, bt_df], ignore_index=True)
                 prediction_df = pd.concat([prediction_df, preds], ignore_index=True)
+
+            del fitted_pipeline
+
+            gc.collect()
+            torch.cuda.empty_cache()
 
             if prediction_df.empty:
                 raise ValueError(f'No contracts have valid scoring windows for {months[val_idx[0]]}')
@@ -904,11 +918,9 @@ def hyperparam_tuning(
         plot_lower = plot_df[str(prediction_interval.lower)].head(200)
         plot_upper = plot_df[str(prediction_interval.upper)].head(200)
 
-        
         fig_path: Path = FIGURE_PATH / f"abalation/finetuned/{resolution}"
         fig_path.mkdir(exist_ok=True, parents=True)
         current_fig_path = fig_path / f"{count}-predictions.png"
-
 
         plot_predictions(
             plot_y_pred,
